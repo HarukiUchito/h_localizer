@@ -43,16 +43,6 @@ pub struct LiDAR {
     pub interpolated_points: Vec<Point>,
 }
 
-fn to_matrix_points(points: &Vec<Point>) -> nalgebra::Matrix2xX<f32> {
-    let (xs, ys): (Vec<f32>, Vec<f32>) = points.iter().map(|p| (p.x, p.y)).unzip();
-    //log::debug!("xs : {:?}", xs.clone());
-    //log::debug!("ys : {:?}", ys.clone());
-    nalgebra::Matrix2xX::<f32>::from_rows(&[
-        nalgebra::RowDVector::from_vec(xs),
-        nalgebra::RowDVector::from_vec(ys),
-    ])
-}
-
 impl LiDAR {
     pub fn reset_xy(self: &mut LiDAR) {
         self.points.clear();
@@ -249,7 +239,82 @@ pub fn parse_line(line: String) -> Option<Measurement> {
     })
 }
 
+#[derive(Debug)]
+struct PointCloud {
+    pub matrix: nalgebra::Matrix3xX<f64>,
+}
+
+impl PointCloud {
+    fn from_vec_of_points(points: &Vec<Point>) -> Self {
+        let (xs, ys): (Vec<f64>, Vec<f64>) =
+            points.iter().map(|p| (p.x as f64, p.y as f64)).unzip();
+        let clen = xs.len();
+        PointCloud {
+            matrix: nalgebra::Matrix3xX::<f64>::from_rows(&[
+                nalgebra::RowDVector::from_vec(xs),
+                nalgebra::RowDVector::from_vec(ys),
+                nalgebra::RowDVector::from_element(clen, 1.0),
+            ]),
+        }
+    }
+
+    fn transform_by_mat(mut self, transformation_matrix: nalgebra::Matrix3<f64>) -> Self {
+        self.matrix = transformation_matrix * self.matrix;
+        self
+    }
+
+    fn to_h_pointcloud_2d(&self) -> h_analyzer_data::PointCloud2D {
+        h_analyzer_data::PointCloud2D::new(
+            self.matrix.row(0).iter().map(|&v| v as f64).collect(),
+            self.matrix.row(1).iter().map(|&v| v as f64).collect(),
+        )
+    }
+}
+
 use tokio::time::{sleep_until, Duration, Instant};
+
+fn process_measurement(
+    i: usize,
+    current_timestamp: f64,
+    measurement: &Measurement,
+) -> h_analyzer_data::WorldFrame {
+    log::debug!("odom: {:?}", measurement.odometry);
+    log::debug!("lidar point num: {}", measurement.lidar.points.len());
+
+    let mut wf = h_analyzer_data::WorldFrame::new(i, current_timestamp);
+    let mut ego = h_analyzer_data::Entity::new();
+    ego.add_estimate(
+        "odometry".to_string(),
+        h_analyzer_data::Estimate::Pose2D(h_analyzer_data::Pose2D::new(
+            measurement.odometry.x as f64,
+            measurement.odometry.y as f64,
+            measurement.odometry.theta as f64,
+        )),
+    );
+
+    let angle_offset = std::f32::consts::PI; // between lidar and ego front
+    let baselink_to_odom = nalgebra::Isometry2::new(
+        nalgebra::Vector2::new(measurement.odometry.x as f64, measurement.odometry.y as f64),
+        (measurement.odometry.theta + angle_offset) as f64,
+    );
+    let raw_points_in_odom = PointCloud::from_vec_of_points(&measurement.lidar.points)
+        .transform_by_mat(baselink_to_odom.to_homogeneous());
+
+    ego.add_measurement(
+        "lidar".to_string(),
+        h_analyzer_data::Measurement::PointCloud2D(raw_points_in_odom.to_h_pointcloud_2d()),
+    );
+
+    let int_points_in_odom = PointCloud::from_vec_of_points(&measurement.lidar.interpolated_points)
+        .transform_by_mat(baselink_to_odom.to_homogeneous());
+
+    ego.add_measurement(
+        "lidar_int".to_string(),
+        h_analyzer_data::Measurement::PointCloud2D(int_points_in_odom.to_h_pointcloud_2d()),
+    );
+    wf.add_entity("ego".to_string(), ego);
+    wf
+}
 
 #[tokio::main]
 async fn main() {
@@ -286,9 +351,7 @@ async fn main() {
     cl.register_new_world(&"slam".to_string()).await.unwrap();
 
     let first_timestamp = measurements[0].time;
-    let mut last_timestamp = first_timestamp;
     let first_time = Instant::now();
-    let mut last_time = first_time;
     for i in 0..measurements.len() {
         let measurement = &measurements[i];
         let current_timestamp = measurement.time;
@@ -297,63 +360,9 @@ async fn main() {
         //log::debug!("check next {}\nts {}", i, current_timestamp,);
         sleep_until(first_time + Duration::from_secs_f64(time_diff)).await;
 
-        //log::debug!("ideal {}", current_timestamp - last_timestamp);
-        let current_time = Instant::now();
-        //log::debug!("actual {:?}", (current_time - last_time).as_secs_f64());
-
-        // actual send procedure
-        //log::debug!("\nsend {}, {}", i, current_timestamp);
-        //log::debug!("");
-
-        log::debug!("odom: {:?}", measurement.odometry);
-        log::debug!("lidar point num: {}", measurement.lidar.points.len());
-
-        let mut wf = h_analyzer_data::WorldFrame::new(i, current_timestamp);
-        let mut ego = h_analyzer_data::Entity::new();
-        ego.add_estimate(
-            "odometry".to_string(),
-            h_analyzer_data::Estimate::Pose2D(h_analyzer_data::Pose2D::new(
-                measurement.odometry.x as f64,
-                measurement.odometry.y as f64,
-                measurement.odometry.theta as f64,
-            )),
-        );
-
-        let angle_offset = std::f32::consts::PI; // between lidar and ego front
-        let iso = nalgebra::Isometry2::new(
-            nalgebra::Vector2::new(measurement.odometry.x, measurement.odometry.y),
-            measurement.odometry.theta + angle_offset,
-        );
-        //log::debug!("iso mat {}", iso.to_homogeneous());
-        let org_xy = to_matrix_points(&measurement.lidar.points);
-        let org_xy = org_xy.insert_row(2, 1.0);
-        //log::debug!("org {}", org_xy.clone());
-        let new_xy = iso.to_homogeneous() * org_xy;
-
-        ego.add_measurement(
-            "lidar".to_string(),
-            h_analyzer_data::Measurement::PointCloud2D(h_analyzer_data::PointCloud2D::new(
-                new_xy.row(0).iter().map(|&v| v as f64).collect(),
-                new_xy.row(1).iter().map(|&v| v as f64).collect(),
-            )),
-        );
-
-        let org_xy = to_matrix_points(&measurement.lidar.interpolated_points);
-        let org_xy = org_xy.insert_row(2, 1.0);
-        let new_xy = iso.to_homogeneous() * org_xy;
-
-        ego.add_measurement(
-            "lidar_int".to_string(),
-            h_analyzer_data::Measurement::PointCloud2D(h_analyzer_data::PointCloud2D::new(
-                new_xy.row(0).iter().map(|&v| v as f64).collect(),
-                new_xy.row(1).iter().map(|&v| v as f64).collect(),
-            )),
-        );
-        wf.add_entity("ego".to_string(), ego);
-        cl.send_world_frame(wf).await.unwrap();
-
-        last_timestamp = current_timestamp;
-        last_time = current_time;
+        cl.send_world_frame(process_measurement(i, current_timestamp, measurement))
+            .await
+            .unwrap();
 
         //break;
     }
