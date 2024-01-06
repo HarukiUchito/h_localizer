@@ -239,7 +239,7 @@ pub fn parse_line(line: String) -> Option<Measurement> {
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PointCloud {
     pub matrix: nalgebra::Matrix3xX<f64>,
 }
@@ -271,49 +271,106 @@ impl PointCloud {
     }
 }
 
+struct PointCloudMap {
+    minimum_time_diff: u64, // in nano seconds
+    pub clouds: std::collections::BTreeMap<u64, PointCloud>,
+}
+
+impl PointCloudMap {
+    fn new() -> Self {
+        Self {
+            minimum_time_diff: (1e6 * 1e-1) as u64, // 0.1s
+            clouds: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn add_point_cloud(&mut self, timestamp: f64, cloud: PointCloud) {
+        let inner_time = (timestamp * 1e6) as u64;
+        if self.clouds.last_key_value().is_some() {
+            log::debug!("ts {} inner {}", timestamp * 1e6, inner_time);
+            log::debug!("last {}", self.clouds.last_key_value().unwrap().0);
+        }
+        if self.clouds.is_empty()
+            || (inner_time - self.clouds.last_key_value().unwrap().0 >= self.minimum_time_diff)
+        {
+            self.clouds.insert(inner_time, cloud);
+        }
+    }
+
+    fn to_h_pointcloud_2d(&self) -> h_analyzer_data::PointCloud2D {
+        let mut x_vec = Vec::new();
+        let mut y_vec = Vec::new();
+        for (_, cloud) in self.clouds.iter() {
+            x_vec.extend(cloud.matrix.row(0).iter().map(|&v| v).collect::<Vec<f64>>());
+            y_vec.extend(cloud.matrix.row(1).iter().map(|&v| v).collect::<Vec<f64>>());
+        }
+        h_analyzer_data::PointCloud2D::new(x_vec, y_vec)
+    }
+}
+
 use tokio::time::{sleep_until, Duration, Instant};
 
-fn process_measurement(
-    i: usize,
-    current_timestamp: f64,
-    measurement: &Measurement,
-) -> h_analyzer_data::WorldFrame {
-    log::debug!("odom: {:?}", measurement.odometry);
-    log::debug!("lidar point num: {}", measurement.lidar.points.len());
+struct PointCloudSLAM {
+    map: PointCloudMap,
+}
 
-    let mut wf = h_analyzer_data::WorldFrame::new(i, current_timestamp);
-    let mut ego = h_analyzer_data::Entity::new();
-    ego.add_estimate(
-        "odometry".to_string(),
-        h_analyzer_data::Estimate::Pose2D(h_analyzer_data::Pose2D::new(
-            measurement.odometry.x as f64,
-            measurement.odometry.y as f64,
-            measurement.odometry.theta as f64,
-        )),
-    );
+impl PointCloudSLAM {
+    fn new() -> Self {
+        Self {
+            map: PointCloudMap::new(),
+        }
+    }
 
-    let angle_offset = std::f32::consts::PI; // between lidar and ego front
-    let baselink_to_odom = nalgebra::Isometry2::new(
-        nalgebra::Vector2::new(measurement.odometry.x as f64, measurement.odometry.y as f64),
-        (measurement.odometry.theta + angle_offset) as f64,
-    );
-    let raw_points_in_odom = PointCloud::from_vec_of_points(&measurement.lidar.points)
-        .transform_by_mat(baselink_to_odom.to_homogeneous());
+    fn process_measurement(
+        &mut self,
+        i: usize,
+        current_timestamp: f64,
+        measurement: &Measurement,
+    ) -> h_analyzer_data::WorldFrame {
+        log::debug!("odom: {:?}", measurement.odometry);
+        log::debug!("lidar point num: {}", measurement.lidar.points.len());
 
-    ego.add_measurement(
-        "lidar".to_string(),
-        h_analyzer_data::Measurement::PointCloud2D(raw_points_in_odom.to_h_pointcloud_2d()),
-    );
+        let angle_offset = std::f32::consts::PI; // between lidar and ego front
+        let baselink_to_odom = nalgebra::Isometry2::new(
+            nalgebra::Vector2::new(measurement.odometry.x as f64, measurement.odometry.y as f64),
+            (measurement.odometry.theta + angle_offset) as f64,
+        );
+        let raw_points_in_odom = PointCloud::from_vec_of_points(&measurement.lidar.points)
+            .transform_by_mat(baselink_to_odom.to_homogeneous());
+        let int_points_in_odom =
+            PointCloud::from_vec_of_points(&measurement.lidar.interpolated_points)
+                .transform_by_mat(baselink_to_odom.to_homogeneous());
 
-    let int_points_in_odom = PointCloud::from_vec_of_points(&measurement.lidar.interpolated_points)
-        .transform_by_mat(baselink_to_odom.to_homogeneous());
+        self.map
+            .add_point_cloud(current_timestamp, int_points_in_odom.clone());
+        log::debug!("pc map: clouds {}", self.map.clouds.len());
 
-    ego.add_measurement(
-        "lidar_int".to_string(),
-        h_analyzer_data::Measurement::PointCloud2D(int_points_in_odom.to_h_pointcloud_2d()),
-    );
-    wf.add_entity("ego".to_string(), ego);
-    wf
+        // send world frame
+        let mut wf = h_analyzer_data::WorldFrame::new(i, current_timestamp);
+        let mut ego = h_analyzer_data::Entity::new();
+        ego.add_estimate(
+            "odometry".to_string(),
+            h_analyzer_data::Estimate::Pose2D(h_analyzer_data::Pose2D::new(
+                measurement.odometry.x as f64,
+                measurement.odometry.y as f64,
+                measurement.odometry.theta as f64,
+            )),
+        );
+        ego.add_measurement(
+            "lidar".to_string(),
+            h_analyzer_data::Measurement::PointCloud2D(raw_points_in_odom.to_h_pointcloud_2d()),
+        );
+        ego.add_measurement(
+            "lidar_int".to_string(),
+            h_analyzer_data::Measurement::PointCloud2D(int_points_in_odom.to_h_pointcloud_2d()),
+        );
+        ego.add_measurement(
+            "map".to_string(),
+            h_analyzer_data::Measurement::PointCloud2D(self.map.to_h_pointcloud_2d()),
+        );
+        wf.add_entity("ego".to_string(), ego);
+        wf
+    }
 }
 
 #[tokio::main]
@@ -350,6 +407,8 @@ async fn main() {
     let mut cl = h_analyzer_client_lib::HAnalyzerClient::new().await;
     cl.register_new_world(&"slam".to_string()).await.unwrap();
 
+    let mut slam = PointCloudSLAM::new();
+
     let first_timestamp = measurements[0].time;
     let first_time = Instant::now();
     for i in 0..measurements.len() {
@@ -360,9 +419,9 @@ async fn main() {
         //log::debug!("check next {}\nts {}", i, current_timestamp,);
         sleep_until(first_time + Duration::from_secs_f64(time_diff)).await;
 
-        cl.send_world_frame(process_measurement(i, current_timestamp, measurement))
-            .await
-            .unwrap();
+        let wf = slam.process_measurement(i, current_timestamp, measurement);
+
+        cl.send_world_frame(wf).await.unwrap();
 
         //break;
     }
