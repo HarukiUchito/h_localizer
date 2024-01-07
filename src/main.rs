@@ -1,4 +1,4 @@
-use std::io::BufRead;
+use std::{borrow::BorrowMut, io::BufRead};
 
 #[derive(Debug)]
 pub struct Odometry {
@@ -245,6 +245,23 @@ struct PointCloud {
 }
 
 impl PointCloud {
+    fn new() -> Self {
+        Self {
+            matrix: nalgebra::Matrix3xX::from_vec(Vec::new()),
+        }
+    }
+
+    fn from_x_y_vec(x_vec: Vec<f64>, y_vec: Vec<f64>) -> Self {
+        let clen = x_vec.len();
+        PointCloud {
+            matrix: nalgebra::Matrix3xX::<f64>::from_rows(&[
+                nalgebra::RowDVector::from_vec(x_vec),
+                nalgebra::RowDVector::from_vec(y_vec),
+                nalgebra::RowDVector::from_element(clen, 1.0),
+            ]),
+        }
+    }
+
     fn from_vec_of_points(points: &Vec<Point>) -> Self {
         let (xs, ys): (Vec<f64>, Vec<f64>) =
             points.iter().map(|p| (p.x as f64, p.y as f64)).unzip();
@@ -269,6 +286,44 @@ impl PointCloud {
             self.matrix.row(1).iter().map(|&v| v as f64).collect(),
         )
     }
+}
+
+struct VoxelGrid {
+    x_vec: Vec<f64>,
+    y_vec: Vec<f64>,
+}
+
+fn voxel_grid_filter(input: &PointCloud) -> PointCloud {
+    let mut voxels = std::collections::HashMap::new();
+    for v in input.matrix.column_iter() {
+        if let (Some(&px), Some(&py)) = (v.get(0), v.get(1)) {
+            let grid_size = 0.1;
+            let key = ((px / grid_size) as i32, (py / grid_size) as i32);
+            if !voxels.contains_key(&key) {
+                voxels.insert(
+                    key,
+                    VoxelGrid {
+                        x_vec: Vec::new(),
+                        y_vec: Vec::new(),
+                    },
+                );
+            }
+            if let Some(voxel) = voxels.get_mut(&key) {
+                voxel.x_vec.push(px);
+                voxel.y_vec.push(py);
+            }
+        }
+    }
+    let mut x_vec = Vec::new();
+    let mut y_vec = Vec::new();
+    for (_, voxel) in voxels.iter() {
+        let vlen = voxel.x_vec.len() as f64;
+        let xmean = voxel.x_vec.iter().sum::<f64>() / vlen;
+        let ymean = voxel.y_vec.iter().sum::<f64>() / vlen;
+        x_vec.push(xmean);
+        y_vec.push(ymean);
+    }
+    PointCloud::from_x_y_vec(x_vec, y_vec)
 }
 
 struct PointCloudMap {
@@ -297,27 +352,61 @@ impl PointCloudMap {
         }
     }
 
-    fn to_h_pointcloud_2d(&self) -> h_analyzer_data::PointCloud2D {
+    fn to_x_y_vec(&self) -> (Vec<f64>, Vec<f64>) {
         let mut x_vec = Vec::new();
         let mut y_vec = Vec::new();
         for (_, cloud) in self.clouds.iter() {
             x_vec.extend(cloud.matrix.row(0).iter().map(|&v| v).collect::<Vec<f64>>());
             y_vec.extend(cloud.matrix.row(1).iter().map(|&v| v).collect::<Vec<f64>>());
         }
+        (x_vec, y_vec)
+    }
+
+    fn entire_map(&self) -> PointCloud {
+        let (x_vec, y_vec) = self.to_x_y_vec();
+        PointCloud::from_x_y_vec(x_vec, y_vec)
+    }
+
+    fn to_h_pointcloud_2d(&self) -> h_analyzer_data::PointCloud2D {
+        let (x_vec, y_vec) = self.to_x_y_vec();
         h_analyzer_data::PointCloud2D::new(x_vec, y_vec)
     }
 }
 
 use tokio::time::{sleep_until, Duration, Instant};
 
+struct PointCloudMatching {
+    pub map: PointCloudMap,
+    pub reference_cloud: PointCloud,
+}
+
+impl PointCloudMatching {
+    fn new() -> Self {
+        Self {
+            map: PointCloudMap::new(),
+            reference_cloud: PointCloud::new(),
+        }
+    }
+
+    fn process_current_cloud(&mut self, timestamp: f64, cloud: PointCloud) {
+        self.map.add_point_cloud(timestamp, cloud);
+        log::debug!("pc map: clouds {}", self.map.clouds.len());
+        self.reference_cloud = voxel_grid_filter(&self.map.entire_map());
+        log::debug!(
+            "map point num filtered: {:?}",
+            self.reference_cloud.matrix.shape()
+        );
+    }
+}
+
 struct PointCloudSLAM {
-    map: PointCloudMap,
+    matching: PointCloudMatching,
 }
 
 impl PointCloudSLAM {
     fn new() -> Self {
         Self {
-            map: PointCloudMap::new(),
+            matching: PointCloudMatching::new(),
         }
     }
 
@@ -341,9 +430,8 @@ impl PointCloudSLAM {
             PointCloud::from_vec_of_points(&measurement.lidar.interpolated_points)
                 .transform_by_mat(baselink_to_odom.to_homogeneous());
 
-        self.map
-            .add_point_cloud(current_timestamp, int_points_in_odom.clone());
-        log::debug!("pc map: clouds {}", self.map.clouds.len());
+        self.matching
+            .process_current_cloud(current_timestamp, int_points_in_odom.clone());
 
         // send world frame
         let mut wf = h_analyzer_data::WorldFrame::new(i, current_timestamp);
@@ -364,10 +452,14 @@ impl PointCloudSLAM {
             "lidar_int".to_string(),
             h_analyzer_data::Measurement::PointCloud2D(int_points_in_odom.to_h_pointcloud_2d()),
         );
+
         ego.add_measurement(
-            "map".to_string(),
-            h_analyzer_data::Measurement::PointCloud2D(self.map.to_h_pointcloud_2d()),
+            "reference_map".to_string(),
+            h_analyzer_data::Measurement::PointCloud2D(
+                self.matching.reference_cloud.to_h_pointcloud_2d(),
+            ),
         );
+
         wf.add_entity("ego".to_string(), ego);
         wf
     }
