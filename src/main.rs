@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, io::BufRead};
+use std::io::BufRead;
 
 #[derive(Debug)]
 pub struct Odometry {
@@ -329,6 +329,7 @@ fn voxel_grid_filter(input: &PointCloud) -> PointCloud {
 struct PointCloudMap {
     minimum_time_diff: u64, // in nano seconds
     pub clouds: std::collections::BTreeMap<u64, PointCloud>,
+    pub entire_map_cloud: PointCloud,
 }
 
 impl PointCloudMap {
@@ -336,6 +337,7 @@ impl PointCloudMap {
         Self {
             minimum_time_diff: (1e6 * 1e-1) as u64, // 0.1s
             clouds: std::collections::BTreeMap::new(),
+            entire_map_cloud: PointCloud::new(),
         }
     }
 
@@ -350,6 +352,29 @@ impl PointCloudMap {
         {
             self.clouds.insert(inner_time, cloud);
         }
+        self.entire_map_cloud = voxel_grid_filter(&self.entire_map());
+        log::debug!(
+            "map point num filtered: {:?}",
+            self.entire_map_cloud.matrix.shape()
+        );
+    }
+
+    fn find_nearest_point(
+        &self,
+        query_point: &nalgebra::Matrix3x1<f64>,
+    ) -> Option<nalgebra::Matrix3x1<f64>> {
+        let distances: Vec<f64> = self
+            .entire_map_cloud
+            .matrix
+            .column_iter()
+            .map(|v| ((v - query_point).transpose() * (v - query_point)).sum())
+            .collect();
+        let min_index = distances
+            .iter()
+            .enumerate()
+            .min_by(|(_, &a), (_, &b)| a.total_cmp(&b))
+            .map(|(index, _)| index)?;
+        Some(self.entire_map_cloud.matrix.column(min_index).into())
     }
 
     fn to_x_y_vec(&self) -> (Vec<f64>, Vec<f64>) {
@@ -373,29 +398,113 @@ impl PointCloudMap {
     }
 }
 
+use nalgebra::Matrix3x1;
 use tokio::time::{sleep_until, Duration, Instant};
 
 struct PointCloudMatching {
     pub map: PointCloudMap,
-    pub reference_cloud: PointCloud,
 }
 
 impl PointCloudMatching {
     fn new() -> Self {
         Self {
             map: PointCloudMap::new(),
-            reference_cloud: PointCloud::new(),
         }
     }
 
-    fn process_current_cloud(&mut self, timestamp: f64, cloud: PointCloud) {
-        self.map.add_point_cloud(timestamp, cloud);
-        log::debug!("pc map: clouds {}", self.map.clouds.len());
-        self.reference_cloud = voxel_grid_filter(&self.map.entire_map());
-        log::debug!(
-            "map point num filtered: {:?}",
-            self.reference_cloud.matrix.shape()
+    fn point_to_point_cost(p1: nalgebra::Matrix3x1<f64>, p2: nalgebra::Matrix3x1<f64>) -> f64 {
+        let dp = p1 - p2;
+        (dp.transpose() * dp).sum()
+    }
+
+    fn process_current_cloud(
+        &mut self,
+        timestamp: f64,
+        initial_transform: &nalgebra::Isometry2<f64>,
+        current_cloud_in_base: PointCloud,
+    ) {
+        log::debug!("\n[PointCloudMatching process]");
+        let mut final_transform = initial_transform.clone();
+
+        let calcCost = |pointcloud: PointCloud, nearests: &Vec<Option<Matrix3x1<f64>>>| {
+            let mut cost = 0.0;
+            let pnum = pointcloud.matrix.shape().1;
+            for i in 0..pnum {
+                if let Some(np) = nearests[i] {
+                    let p = pointcloud.matrix.column(i);
+                    cost += ((np - p).transpose() * (np - p)).sum();
+                }
+            }
+            cost
+        };
+
+        let mut best_cost = f64::MAX;
+        // iterative optimization
+        for i in 0..5 {
+            // transform current_cloud by current estimate
+            let current_cloud_in_odom = current_cloud_in_base
+                .clone()
+                .transform_by_mat(final_transform.to_homogeneous());
+            // data association
+            let mut nearests = Vec::new();
+            for p in current_cloud_in_odom.matrix.column_iter() {
+                nearests.push(self.map.find_nearest_point(&p.into()));
+            }
+
+            // slightly shifted current points
+            let mut cp_transform = initial_transform.clone();
+            cp_transform.translation.x += 1e-5;
+            let cc_odom_x_shifted = current_cloud_in_base
+                .clone()
+                .transform_by_mat(cp_transform.to_homogeneous());
+            let mut cp_transform = initial_transform.clone();
+            cp_transform.translation.y += 1e-5;
+            let cc_odom_y_shifted = current_cloud_in_base
+                .clone()
+                .transform_by_mat(cp_transform.to_homogeneous());
+            let cp_transform = nalgebra::Isometry2::new(
+                initial_transform.translation.vector,
+                (initial_transform.rotation.angle() + 1e-5) as f64,
+            );
+            let cc_odom_a_shifted = current_cloud_in_base
+                .clone()
+                .transform_by_mat(cp_transform.to_homogeneous());
+
+            let ev = calcCost(current_cloud_in_odom, &nearests);
+            let dx = (calcCost(cc_odom_x_shifted, &nearests) - ev) / 1e-5;
+            let dy = (calcCost(cc_odom_y_shifted, &nearests) - ev) / 1e-5;
+            let da = (calcCost(cc_odom_a_shifted, &nearests) - ev) / 1e-5;
+            let new_x = initial_transform.translation.x - 1e-6 * dx;
+            let new_y = initial_transform.translation.y - 1e-6 * dy;
+            let new_a = initial_transform.rotation.angle() - 1e-6 * da;
+            log::debug!("i: {}, cost: {}", i, ev);
+            /*log::debug!(
+                "before cost: {}, x: {}, y: {}, a: {}",
+                ev,
+                initial_transform.translation.x,
+                initial_transform.translation.y,
+                initial_transform.rotation.angle()
+            );*/
+            //log::debug!(" after x: {}, y: {}, a: {}", new_x, new_y, new_a);
+            let new_transform =
+                nalgebra::Isometry2::new(nalgebra::Vector2::new(new_x, new_y), new_a);
+
+            let current_cloud_in_odom_new = current_cloud_in_base
+                .clone()
+                .transform_by_mat(new_transform.to_homogeneous());
+            let new_cost = calcCost(current_cloud_in_odom_new, &nearests);
+            if new_cost < best_cost {
+                final_transform = new_transform;
+                best_cost = new_cost;
+            }
+        }
+
+        // add aligned pointcloud to the map
+        self.map.add_point_cloud(
+            timestamp,
+            current_cloud_in_base.transform_by_mat(final_transform.to_homogeneous()),
         );
+        log::debug!("pc map: clouds {}", self.map.clouds.len());
     }
 }
 
@@ -426,12 +535,17 @@ impl PointCloudSLAM {
         );
         let raw_points_in_odom = PointCloud::from_vec_of_points(&measurement.lidar.points)
             .transform_by_mat(baselink_to_odom.to_homogeneous());
-        let int_points_in_odom =
-            PointCloud::from_vec_of_points(&measurement.lidar.interpolated_points)
-                .transform_by_mat(baselink_to_odom.to_homogeneous());
+        let int_points_in_base =
+            PointCloud::from_vec_of_points(&measurement.lidar.interpolated_points);
+        let int_points_in_odom = int_points_in_base
+            .clone()
+            .transform_by_mat(baselink_to_odom.to_homogeneous());
 
-        self.matching
-            .process_current_cloud(current_timestamp, int_points_in_odom.clone());
+        self.matching.process_current_cloud(
+            current_timestamp,
+            &baselink_to_odom,
+            int_points_in_base,
+        );
 
         // send world frame
         let mut wf = h_analyzer_data::WorldFrame::new(i, current_timestamp);
@@ -456,7 +570,7 @@ impl PointCloudSLAM {
         ego.add_measurement(
             "reference_map".to_string(),
             h_analyzer_data::Measurement::PointCloud2D(
-                self.matching.reference_cloud.to_h_pointcloud_2d(),
+                self.matching.map.entire_map_cloud.to_h_pointcloud_2d(),
             ),
         );
 
