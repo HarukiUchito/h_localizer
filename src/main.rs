@@ -1,244 +1,4 @@
 use std::io::BufRead;
-
-#[derive(Debug)]
-pub struct Odometry {
-    x: f32,
-    y: f32,
-    theta: f32,
-}
-
-#[derive(Clone, Debug, Copy)]
-pub struct Point {
-    pub x: f32,
-    pub y: f32,
-    theta: f32,
-    range: f32,
-}
-
-fn distance(p1: Point, p2: Point) -> f32 {
-    let dx = p1.x - p2.x;
-    let dy = p1.y - p2.y;
-    f32::sqrt(dx * dx + dy * dy)
-}
-
-fn angular_mid(p1: Point, p2: Point, theta: f32) -> Point {
-    let a = (p1.y - p2.y) / (p1.x - p2.x);
-    let b = p1.y - a * p1.x;
-    let tant = f32::tan(theta);
-    let mx = b / (tant - a);
-    let my = tant * mx;
-    Point {
-        x: mx,
-        y: my,
-        theta: theta,
-        range: f32::sqrt(mx * mx + my * my),
-    }
-}
-
-#[derive(Debug)]
-pub struct LiDAR {
-    thetas: Vec<f32>,
-    ranges: Vec<f32>,
-    pub points: Vec<Point>,
-    pub interpolated_points: Vec<Point>,
-}
-
-impl LiDAR {
-    pub fn reset_xy(self: &mut LiDAR) {
-        self.points.clear();
-        for i in 0..self.thetas.len() {
-            let th = self.thetas[i];
-            let rn = self.ranges[i];
-            if rn < 0.1 || rn > 6.0 {
-                continue;
-            }
-            let x = rn * th.cos();
-            let y = rn * th.sin();
-            self.points.push(Point {
-                x: x,
-                y: y,
-                theta: th,
-                range: rn,
-            });
-            //log::debug!("th: {}, rn: {}, x: {}, y: {}", th, rn, x, y);
-        }
-    }
-    pub fn interpolate(self: &mut LiDAR) {
-        self.interpolate_verbose(false);
-    }
-    pub fn interpolate_verbose(self: &mut LiDAR, verbose: bool) {
-        self.interpolated_points.clear();
-        let mut iter = self.points.iter().peekable();
-
-        let mut last_th;
-
-        // always add first point
-        let mut current_p = match iter.next().cloned() {
-            Some(firstpoint) => {
-                let fp = firstpoint.clone();
-                //self.interpolated_points.push(fp);
-                last_th = fp.theta;
-                fp
-            }
-            None => return, // zero points
-        };
-        let mut last_original_p = current_p;
-
-        let dangle = f32::to_radians(-1.0);
-        let mut nangle = self.thetas.first().unwrap() + dangle;
-        if verbose {
-            log::debug!("first nangle: {}", f32::to_degrees(nangle));
-        }
-        let mut cnt = 0;
-        loop {
-            let mut next_p: Point;
-            let next_p = loop {
-                next_p = match iter.peek().cloned() {
-                    Some(np) => np.clone(),
-                    None => break None, // if no more next point
-                };
-                if next_p.theta < nangle {
-                    break Some(next_p);
-                }
-                iter.next();
-            };
-            let next_p = match next_p {
-                Some(np) => np,
-                None => break,
-            };
-            let mid_p = angular_mid(current_p, next_p, nangle);
-            let mc_dist = distance(mid_p, last_original_p);
-            let mn_dist = distance(mid_p, next_p);
-            const DIS_THRESHOLD: f32 = 0.05;
-            const DEG_THRESHOLD: f32 = 0.5;
-            let ddeg = f32::to_degrees(last_th - mid_p.theta).abs();
-            if (mc_dist <= DIS_THRESHOLD || mn_dist <= DIS_THRESHOLD) && ddeg >= DEG_THRESHOLD {
-                self.interpolated_points.push(mid_p);
-                last_th = mid_p.theta;
-                current_p = mid_p;
-            }
-
-            let lesthan = cnt < 5;
-            if verbose && lesthan {
-                log::debug!(
-                    "\nnangle: {}, cx: {}, cy: {}, cth: {}\n nx: {}, ny: {}, nth: {}",
-                    f32::to_degrees(nangle),
-                    current_p.x,
-                    current_p.y,
-                    f32::to_degrees(current_p.theta),
-                    next_p.x,
-                    next_p.y,
-                    f32::to_degrees(next_p.theta)
-                );
-            }
-
-            last_original_p = next_p;
-            nangle += dangle; // update next angle
-
-            if verbose && lesthan {
-                log::debug!(
-                    "mx: {}, my: {}, mth: {}\n c-dist: {}, n-dist: {}, mth2: {}, ddeg: {}",
-                    mid_p.x,
-                    mid_p.y,
-                    f32::to_degrees(mid_p.theta),
-                    mc_dist,
-                    mn_dist,
-                    f32::to_degrees(mid_p.y.atan2(mid_p.x)),
-                    ddeg
-                );
-
-                log::debug!("isize: {}", self.interpolated_points.len());
-            }
-            cnt += 1;
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct Measurement {
-    pub time: f64,
-    pub odometry: Odometry,
-    pub lidar: LiDAR,
-}
-
-pub fn parse_line(line: String) -> Option<Measurement> {
-    let mut tokens = line.split_ascii_whitespace().collect::<Vec<&str>>();
-    //log::debug!("tokens {:?}", tokens);
-    log::debug!("tokens len {}", tokens.len());
-
-    let tlen = tokens.len();
-    //log::debug!("token num: {}", tlen);
-    if tlen < 5 {
-        return None;
-    }
-
-    let ltype = tokens[0];
-    if ltype != "LASERSCAN" {
-        return None;
-    }
-    // let id = tokens[1].parse::<i32>().unwrap();
-    let sec = tokens[2].parse::<i32>().unwrap();
-    let nsec = tokens[3].parse::<i32>().unwrap();
-    let fsec = sec as f64 + (nsec as f64 * 1e-9);
-
-    let odom_x = tokens[tlen - 5].parse::<f32>().unwrap();
-    let odom_y = tokens[tlen - 4].parse::<f32>().unwrap();
-    let odom_t = tokens[tlen - 3].parse::<f32>().unwrap();
-
-    let pnum = tokens[4].parse::<i32>().unwrap();
-    let rest = tlen as i32 - 2 * pnum;
-    /*log::debug!(
-        "sec: {}, nsec: {}, nsec9: {}, time: {}",
-        sec,
-        nsec,
-        nsec as f32 * 1e-9,
-        fsec
-    );*/
-    if rest < 8 {
-        return None;
-    }
-
-    let idx = tokens.len() - 5;
-    //log::debug!("from: {}", idx);
-    tokens.drain(idx..(idx + 5));
-    //log::debug!("last token: {}", tokens.last().unwrap());
-    tokens.drain(0..5); // remove until pnum
-                        //log::debug!("first token: {}", tokens.first().unwrap());
-    log::debug!("drained {}, pnum {}", tokens.len(), pnum);
-
-    let thetas = tokens
-        .iter()
-        .step_by(2)
-        .map(|&s| s.parse::<f32>().unwrap().to_radians())
-        .collect::<Vec<f32>>();
-    //log::debug!("{:?}", thetas);
-
-    // let theta_ds = thetas.windows(2).map(|x| x[0] - x[1]).collect::<Vec<f32>>();
-
-    tokens.drain(0..1); // remove first theta
-
-    let ranges = tokens
-        .iter()
-        .step_by(2)
-        .map(|&s| s.parse::<f32>().unwrap())
-        .collect::<Vec<f32>>();
-
-    Some(Measurement {
-        time: fsec,
-        odometry: Odometry {
-            x: odom_x,
-            y: odom_y,
-            theta: odom_t,
-        },
-        lidar: LiDAR {
-            thetas: thetas,
-            ranges: ranges,
-            points: Vec::new(),
-            interpolated_points: Vec::new(),
-        },
-    })
-}
-
 #[derive(Debug, Clone)]
 struct PointCloud {
     pub matrix: nalgebra::Matrix3xX<f64>,
@@ -262,7 +22,7 @@ impl PointCloud {
         }
     }
 
-    fn from_vec_of_points(points: &Vec<Point>) -> Self {
+    fn from_vec_of_points(points: &Vec<lsc_reader::Point>) -> Self {
         let (xs, ys): (Vec<f64>, Vec<f64>) =
             points.iter().map(|p| (p.x as f64, p.y as f64)).unzip();
         let clen = xs.len();
@@ -393,14 +153,9 @@ impl PointCloudMap {
         let (x_vec, y_vec) = self.to_x_y_vec();
         PointCloud::from_x_y_vec(x_vec, y_vec)
     }
-
-    fn to_h_pointcloud_2d(&self) -> h_analyzer_data::PointCloud2D {
-        let (x_vec, y_vec) = self.to_x_y_vec();
-        h_analyzer_data::PointCloud2D::new(x_vec, y_vec)
-    }
 }
 
-use nalgebra::Matrix3x1;
+use h_localizer::lsc_reader;
 use tokio::time::{sleep_until, Duration, Instant};
 
 struct PointCloudMatching {
@@ -431,7 +186,8 @@ impl PointCloudMatching {
         }
         let mut final_transform = initial_transform.clone();
 
-        let calcCost = |pointcloud: PointCloud, nearests: &Vec<Option<Matrix3x1<f64>>>| {
+        let calc_cost = |pointcloud: PointCloud,
+                         nearests: &Vec<Option<nalgebra::Matrix3x1<f64>>>| {
             let mut cost = 0.0;
             let pnum = pointcloud.matrix.shape().1;
             let mut valid_num = 0;
@@ -478,10 +234,10 @@ impl PointCloudMatching {
                     .clone()
                     .transform_by_mat(cp_transform.to_homogeneous());
 
-                let (ev, vnum) = calcCost(current_cloud_in_odom, &nearests);
-                let dx = (calcCost(cc_odom_x_shifted, &nearests).0 - ev) / 1e-5;
-                let dy = (calcCost(cc_odom_y_shifted, &nearests).0 - ev) / 1e-5;
-                let da = (calcCost(cc_odom_a_shifted, &nearests).0 - ev) / 1e-5;
+                let (ev, vnum) = calc_cost(current_cloud_in_odom, &nearests);
+                let dx = (calc_cost(cc_odom_x_shifted, &nearests).0 - ev) / 1e-5;
+                let dy = (calc_cost(cc_odom_y_shifted, &nearests).0 - ev) / 1e-5;
+                let da = (calc_cost(cc_odom_a_shifted, &nearests).0 - ev) / 1e-5;
                 let new_x = initial_transform.translation.x - 1e-6 * dx;
                 let new_y = initial_transform.translation.y - 1e-6 * dy;
                 let new_a = initial_transform.rotation.angle() - 1e-6 * da;
@@ -499,7 +255,7 @@ impl PointCloudMatching {
                 let current_cloud_in_odom_new = current_cloud_in_base
                     .clone()
                     .transform_by_mat(new_transform.to_homogeneous());
-                let (new_cost, _) = calcCost(current_cloud_in_odom_new, &nearests);
+                let (new_cost, _) = calc_cost(current_cloud_in_odom_new, &nearests);
                 log::debug!(
                     "i: {}, cost: {} vnum: {}, new cost: {}",
                     i,
@@ -544,7 +300,7 @@ impl PointCloudSLAM {
         &mut self,
         _: usize,
         current_timestamp: f64,
-        measurement: &Measurement,
+        measurement: &lsc_reader::Measurement,
         better: bool,
     ) -> h_analyzer_data::Entity {
         if better {
@@ -552,7 +308,7 @@ impl PointCloudSLAM {
             log::debug!("lidar point num: {}", measurement.lidar.points.len());
         }
 
-        let angle_offset = std::f32::consts::PI; // between lidar and ego front
+        let angle_offset = std::f64::consts::PI; // between lidar and ego front
         let baselink_to_odom = nalgebra::Isometry2::new(
             nalgebra::Vector2::new(measurement.odometry.x as f64, measurement.odometry.y as f64),
             (measurement.odometry.theta + angle_offset) as f64,
@@ -614,9 +370,9 @@ async fn main() {
     };
 
     let mut cnt = 0;
-    let mut measurements: Vec<Measurement> = Vec::new();
+    let mut measurements: Vec<lsc_reader::Measurement> = Vec::new();
     for line in std::io::BufReader::new(file).lines() {
-        match parse_line(line.unwrap()) {
+        match lsc_reader::parse_line(line.unwrap(), measurements.last()) {
             Some(mut measurement) => {
                 measurement.lidar.reset_xy();
                 measurement.lidar.interpolate();
