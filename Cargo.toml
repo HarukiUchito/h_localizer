@@ -8,8 +8,10 @@ edition = "2021"
 [dependencies]
 log = "0.4.20"
 env_logger = "0.8.3"
+anyhow = "1.0.71"
 
 nalgebra = "0.32.3"
+approx = "0.3.2"
 
 tokio = { version = "1.35.1", features = ["full"] }
 h_analyzer_client_lib = { git = "https://github.com/HarukiUchito/h_analyzer_client_lib.git" }

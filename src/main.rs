@@ -358,35 +358,11 @@ impl PointCloudSLAM {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     env_logger::init();
-    // open and read lsc file
-    let path = "/home/haruki/data/little_slam_dataset/hall.lsc";
-    log::debug!("path: {}", path);
-    let path = std::path::Path::new(&path);
-    let file = match std::fs::File::open(&path) {
-        Err(why) => panic!("couldn't open {}: {}", path.display(), why),
-        Ok(file) => file,
-    };
 
-    let mut cnt = 0;
-    let mut measurements: Vec<lsc_reader::Measurement> = Vec::new();
-    for line in std::io::BufReader::new(file).lines() {
-        match lsc_reader::parse_line(line.unwrap(), measurements.last()) {
-            Some(mut measurement) => {
-                measurement.lidar.reset_xy();
-                measurement.lidar.interpolate();
-                measurements.push(measurement);
-            }
-            None => {
-                log::debug!("failed reading line {} as an measurement", cnt);
-            }
-        }
-        cnt = cnt + 1;
-        if cnt > 0 {
-            //return;
-        }
-    }
+    let file_path = "/home/haruki/data/little_slam_dataset/hall.lsc";
+    let measurements = lsc_reader::load_lsc_file(file_path)?;
 
     let mut cl = h_analyzer_client_lib::HAnalyzerClient::new().await;
     cl.register_new_world(&"slam".to_string()).await.unwrap();
@@ -418,4 +394,5 @@ async fn main() {
 
         //break;
     }
+    Ok(())
 }

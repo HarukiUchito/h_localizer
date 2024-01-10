@@ -250,39 +250,66 @@ pub fn parse_line(line: String, last_measurement: Option<&Measurement>) -> Optio
     })
 }
 
-#[cfg(test)]
-mod lsc_reader_test {
-    use super::*;
-    use std::io::BufRead;
+use std::io::BufRead;
+pub fn load_lsc_file(filepath: &str) -> anyhow::Result<Vec<Measurement>> {
+    log::debug!("lsc file path: {}", filepath);
+    let path = std::path::Path::new(&filepath);
+    let file = match std::fs::File::open(&path) {
+        Err(why) => panic!("couldn't open {}: {}", path.display(), why),
+        Ok(file) => file,
+    };
 
-    #[test]
-    fn odometry_relative() {
-        let path = "/home/haruki/data/little_slam_dataset/hall.lsc";
-        log::debug!("path: {}", path);
-        let path = std::path::Path::new(&path);
-        let file = match std::fs::File::open(&path) {
-            Err(why) => panic!("couldn't open {}: {}", path.display(), why),
-            Ok(file) => file,
-        };
-
-        let mut cnt = 0;
-        let mut measurements: Vec<Measurement> = Vec::new();
-        for line in std::io::BufReader::new(file).lines() {
-            match parse_line(line.unwrap(), measurements.last()) {
-                Some(mut measurement) => {
-                    measurement.lidar.reset_xy();
-                    measurement.lidar.interpolate();
-                    measurements.push(measurement);
-                }
-                None => {
-                    log::debug!("failed reading line {} as an measurement", cnt);
-                }
+    let mut cnt = 0;
+    let mut measurements: Vec<Measurement> = Vec::new();
+    for line in std::io::BufReader::new(file).lines() {
+        match parse_line(line.unwrap(), measurements.last()) {
+            Some(mut measurement) => {
+                measurement.lidar.reset_xy();
+                measurement.lidar.interpolate();
+                measurements.push(measurement);
             }
-            cnt = cnt + 1;
-            if cnt > 0 {
-                //return;
+            None => {
+                log::debug!("failed reading line {} as an measurement", cnt);
             }
         }
-        assert_eq!(4, 4);
+        cnt = cnt + 1;
+    }
+    Ok(measurements)
+}
+
+#[cfg(test)]
+mod lsc_reader_test {
+    use nalgebra::ComplexField;
+
+    use super::*;
+    use std::ops::MulAssign;
+
+    #[test]
+    fn odometry_relative() -> anyhow::Result<()> {
+        let measurements = load_lsc_file("/home/haruki/data/little_slam_dataset/hall.lsc")?;
+
+        let mut current_state = nalgebra::Isometry2::new(nalgebra::Vector2::new(0.0, 0.0), 0.0);
+        for measurement in measurements.iter() {
+            if let Some(rmotion) = measurement.relative_motion {
+                current_state.mul_assign(rmotion);
+                let orig_state = nalgebra::Isometry2::new(
+                    nalgebra::Vector2::new(measurement.odometry.x, measurement.odometry.y),
+                    measurement.odometry.theta,
+                );
+                approx::relative_eq!(current_state.translation.x, orig_state.translation.x);
+                approx::relative_eq!(current_state.translation.y, orig_state.translation.y);
+                approx::relative_eq!(current_state.rotation.real(), orig_state.rotation.real());
+                approx::relative_eq!(
+                    current_state.rotation.imaginary(),
+                    orig_state.rotation.imaginary()
+                );
+            } else {
+                current_state = nalgebra::Isometry2::new(
+                    nalgebra::Vector2::new(measurement.odometry.x, measurement.odometry.y),
+                    measurement.odometry.theta,
+                );
+            }
+        }
+        Ok(())
     }
 }
