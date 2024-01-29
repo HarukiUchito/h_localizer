@@ -1,4 +1,4 @@
-use std::io::BufRead;
+use std::{io::BufRead, ops::MulAssign};
 #[derive(Debug, Clone)]
 struct PointCloud {
     pub matrix: nalgebra::Matrix3xX<f64>,
@@ -287,12 +287,17 @@ impl PointCloudMatching {
 
 struct PointCloudSLAM {
     matching: PointCloudMatching,
+    current_pose: nalgebra::Isometry2<f64>,
 }
 
 impl PointCloudSLAM {
     fn new() -> Self {
         Self {
             matching: PointCloudMatching::new(),
+            current_pose: nalgebra::Isometry2::new(
+                nalgebra::Vector2::new(0.0, 0.0),
+                std::f64::consts::PI,
+            ),
         }
     }
 
@@ -308,22 +313,33 @@ impl PointCloudSLAM {
             log::debug!("lidar point num: {}", measurement.lidar.points.len());
         }
 
+        if let Some(rmotion) = measurement.relative_motion {
+            self.current_pose.mul_assign(rmotion);
+        } else {
+            self.current_pose = nalgebra::Isometry2::new(
+                nalgebra::Vector2::new(
+                    measurement.odometry.x as f64,
+                    measurement.odometry.y as f64,
+                ),
+                (measurement.odometry.theta) as f64,
+            );
+        }
+
         let angle_offset = std::f64::consts::PI; // between lidar and ego front
-        let baselink_to_odom = nalgebra::Isometry2::new(
-            nalgebra::Vector2::new(measurement.odometry.x as f64, measurement.odometry.y as f64),
-            (measurement.odometry.theta + angle_offset) as f64,
-        );
+        let baselink_to_odom = nalgebra::Isometry2::from(self.current_pose);
+        let lidar_to_baselink = nalgebra::Isometry2::new(nalgebra::Vector2::zeros(), angle_offset);
+        let lidar_to_odom = baselink_to_odom * lidar_to_baselink;
         let raw_points_in_odom = PointCloud::from_vec_of_points(&measurement.lidar.points)
-            .transform_by_mat(baselink_to_odom.to_homogeneous());
+            .transform_by_mat(lidar_to_odom.to_homogeneous());
         let int_points_in_base =
             PointCloud::from_vec_of_points(&measurement.lidar.interpolated_points);
         let int_points_in_odom = int_points_in_base
             .clone()
-            .transform_by_mat(baselink_to_odom.to_homogeneous());
+            .transform_by_mat(lidar_to_odom.to_homogeneous());
 
         self.matching.process_current_cloud(
             current_timestamp,
-            &baselink_to_odom,
+            &lidar_to_odom,
             int_points_in_base,
             better,
         );
@@ -361,10 +377,10 @@ impl PointCloudSLAM {
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    let file_path = "/home/haruki/data/little_slam_dataset/hall.lsc";
+    let file_path = "/home/haruki/Works/datasets/little_slam/hall.lsc";
     let measurements = lsc_reader::load_lsc_file(file_path)?;
 
-    let mut cl = h_analyzer_client_lib::HAnalyzerClient::new().await;
+    let mut cl = h_analyzer_client_lib::HAnalyzerClient::new("http://localhost:50051").await;
     cl.register_new_world(&"slam".to_string()).await.unwrap();
 
     let mut slam = PointCloudSLAM::new();
