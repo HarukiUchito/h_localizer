@@ -133,8 +133,8 @@ impl PointCloudMap {
             .iter()
             .enumerate()
             .min_by(|(_, &a), (_, &b)| a.total_cmp(&b))?;
-        if min_dist > 0.2 {
-            //return None;
+        if min_dist > (0.2 * 0.2) {
+            return None;
         }
         Some(self.entire_map_cloud.matrix.column(min_index).into())
     }
@@ -203,6 +203,7 @@ impl PointCloudMatching {
 
         if better {
             let mut best_cost = f64::MAX;
+            let mut old_cost = f64::MAX;
             // iterative optimization
             for i in 0..10 {
                 // transform current_cloud by current estimate
@@ -215,61 +216,80 @@ impl PointCloudMatching {
                     nearests.push(self.map.find_nearest_point(&p.into()));
                 }
 
-                // slightly shifted current points
-                let mut cp_transform = initial_transform.clone();
-                cp_transform.translation.x += 1e-5;
-                let cc_odom_x_shifted = current_cloud_in_base
-                    .clone()
-                    .transform_by_mat(cp_transform.to_homogeneous());
-                let mut cp_transform = initial_transform.clone();
-                cp_transform.translation.y += 1e-5;
-                let cc_odom_y_shifted = current_cloud_in_base
-                    .clone()
-                    .transform_by_mat(cp_transform.to_homogeneous());
-                let cp_transform = nalgebra::Isometry2::new(
-                    initial_transform.translation.vector,
-                    (initial_transform.rotation.angle() + 1e-5) as f64,
-                );
-                let cc_odom_a_shifted = current_cloud_in_base
-                    .clone()
-                    .transform_by_mat(cp_transform.to_homogeneous());
+                let mut local_best_cost = f64::MAX;
+                let mut local_old_cost = f64::MAX;
+                let mut local_final_transform = final_transform.clone();
+                for j in 0..10 {
+                    // transform current_cloud by current estimate
+                    let current_cloud_in_odom = current_cloud_in_base
+                        .clone()
+                        .transform_by_mat(local_final_transform.to_homogeneous());
+                    // slightly shifted current points
+                    let mut cp_transform = initial_transform.clone();
+                    cp_transform.translation.x += 1e-5;
+                    let cc_odom_x_shifted = current_cloud_in_base
+                        .clone()
+                        .transform_by_mat(cp_transform.to_homogeneous());
+                    let mut cp_transform = initial_transform.clone();
+                    cp_transform.translation.y += 1e-5;
+                    let cc_odom_y_shifted = current_cloud_in_base
+                        .clone()
+                        .transform_by_mat(cp_transform.to_homogeneous());
+                    let cp_transform = nalgebra::Isometry2::new(
+                        initial_transform.translation.vector,
+                        (initial_transform.rotation.angle() + 1e-5) as f64,
+                    );
+                    let cc_odom_a_shifted = current_cloud_in_base
+                        .clone()
+                        .transform_by_mat(cp_transform.to_homogeneous());
 
-                let (ev, vnum) = calc_cost(current_cloud_in_odom, &nearests);
-                let dx = (calc_cost(cc_odom_x_shifted, &nearests).0 - ev) / 1e-5;
-                let dy = (calc_cost(cc_odom_y_shifted, &nearests).0 - ev) / 1e-5;
-                let da = (calc_cost(cc_odom_a_shifted, &nearests).0 - ev) / 1e-5;
-                let new_x = initial_transform.translation.x - 1e-6 * dx;
-                let new_y = initial_transform.translation.y - 1e-6 * dy;
-                let new_a = initial_transform.rotation.angle() - 1e-6 * da;
-                /*log::debug!(
-                    "before cost: {}, x: {}, y: {}, a: {}",
-                    ev,
-                    initial_transform.translation.x,
-                    initial_transform.translation.y,
-                    initial_transform.rotation.angle()
-                );*/
-                //log::debug!(" after x: {}, y: {}, a: {}", new_x, new_y, new_a);
-                let new_transform =
-                    nalgebra::Isometry2::new(nalgebra::Vector2::new(new_x, new_y), new_a);
+                    let (ev, vnum) = calc_cost(current_cloud_in_odom.clone(), &nearests);
+                    let dx = (calc_cost(cc_odom_x_shifted, &nearests).0 - ev) / 1e-5;
+                    let dy = (calc_cost(cc_odom_y_shifted, &nearests).0 - ev) / 1e-5;
+                    let da = (calc_cost(cc_odom_a_shifted, &nearests).0 - ev) / 1e-5;
+                    let new_x = initial_transform.translation.x - 1e-6 * dx;
+                    let new_y = initial_transform.translation.y - 1e-6 * dy;
+                    let new_a = initial_transform.rotation.angle() - 1e-6 * da;
+                    /*log::debug!(
+                        "before cost: {}, x: {}, y: {}, a: {}",
+                        ev,
+                        initial_transform.translation.x,
+                        initial_transform.translation.y,
+                        initial_transform.rotation.angle()
+                    );*/
+                    //log::debug!(" after x: {}, y: {}, a: {}", new_x, new_y, new_a);
+                    let new_transform =
+                        nalgebra::Isometry2::new(nalgebra::Vector2::new(new_x, new_y), new_a);
 
-                let current_cloud_in_odom_new = current_cloud_in_base
-                    .clone()
-                    .transform_by_mat(new_transform.to_homogeneous());
-                let (new_cost, _) = calc_cost(current_cloud_in_odom_new, &nearests);
-                log::debug!(
-                    "i: {}, cost: {} vnum: {}, new cost: {}",
-                    i,
-                    ev,
-                    vnum,
-                    new_cost
-                );
-                if new_cost < best_cost {
-                    final_transform = new_transform;
-                    best_cost = new_cost;
-                    if best_cost - new_cost <= 1e-6 {
+                    let current_cloud_in_odom_new = current_cloud_in_base
+                        .clone()
+                        .transform_by_mat(new_transform.to_homogeneous());
+                    let (new_cost, _) = calc_cost(current_cloud_in_odom_new, &nearests);
+                    log::debug!(
+                        "i: {}, j: {}, cost: {} vnum: {}, new cost: {}",
+                        i,
+                        j,
+                        ev,
+                        vnum,
+                        new_cost
+                    );
+                    if new_cost < local_best_cost {
+                        local_final_transform = new_transform;
+                        local_best_cost = new_cost;
+                    }
+                    if (local_old_cost - new_cost).abs() <= 1e-6 {
                         break;
                     }
+                    local_old_cost = new_cost;
                 }
+                if local_best_cost < best_cost {
+                    best_cost = local_best_cost;
+                    final_transform = local_final_transform;
+                }
+                if (old_cost - local_best_cost).abs() <= 1e-6 {
+                    break;
+                }
+                old_cost = local_best_cost;
             }
         }
 
@@ -337,11 +357,22 @@ impl PointCloudSLAM {
             .clone()
             .transform_by_mat(lidar_to_odom.to_homogeneous());
 
-        self.matching.process_current_cloud(
+        let final_transform = self.matching.process_current_cloud(
             current_timestamp,
             &lidar_to_odom,
             int_points_in_base,
             better,
+        );
+
+        log::debug!("current: {:?}", self.current_pose);
+        log::debug!("initial: {:?}", lidar_to_odom);
+        log::debug!("final  : {:?}", final_transform);
+
+        self.current_pose = final_transform * lidar_to_baselink.inverse();
+
+        log::debug!(
+            "new current  : {:?}",
+            final_transform * lidar_to_baselink.inverse()
         );
 
         // send world frame
@@ -377,8 +408,22 @@ impl PointCloudSLAM {
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    let file_path = "/home/haruki/Works/datasets/little_slam/hall.lsc";
-    let measurements = lsc_reader::load_lsc_file(file_path)?;
+    let matches = clap::Command::new("h_localizer")
+        .arg(
+            clap::arg!(--num <VALUE>)
+                .default_value("0")
+                .value_parser(clap::value_parser!(usize)),
+        )
+        .get_matches();
+    let file_path = "/home/haruki/Works/datasets/little_slam/".to_string()
+        + match matches.get_one::<usize>("num").unwrap() {
+            0 => "hall",
+            1 => "corridor",
+            _ => panic!("no file"),
+        }
+        + ".lsc";
+    println!("filepath: {}", file_path);
+    let measurements = lsc_reader::load_lsc_file(file_path.as_str())?;
 
     let mut cl = h_analyzer_client_lib::HAnalyzerClient::new("http://localhost:50051").await;
     cl.register_new_world(&"slam".to_string()).await.unwrap();
