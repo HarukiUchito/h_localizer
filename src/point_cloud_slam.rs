@@ -1,6 +1,6 @@
 use crate::lsc_reader;
 
-use std::{io::BufRead, ops::MulAssign};
+use std::ops::MulAssign;
 #[derive(Debug, Clone)]
 struct PointCloud {
     pub matrix: nalgebra::Matrix3xX<f64>,
@@ -159,12 +159,16 @@ impl PointCloudMap {
 
 struct PointCloudMatching {
     pub map: PointCloudMap,
+    initial_cost: Option<f64>,
+    optimized_cost: Option<f64>,
 }
 
 impl PointCloudMatching {
     fn new() -> Self {
         Self {
             map: PointCloudMap::new(),
+            initial_cost: None,
+            optimized_cost: None,
         }
     }
 
@@ -173,7 +177,7 @@ impl PointCloudMatching {
         (dp.transpose() * dp).sum()
     }
 
-    fn process_current_cloud(
+    pub fn process_current_cloud(
         &mut self,
         timestamp: f64,
         initial_transform: &nalgebra::Isometry2<f64>,
@@ -200,9 +204,9 @@ impl PointCloudMatching {
             (cost, valid_num)
         };
 
+        let mut best_cost = f64::MAX;
+        let mut old_cost = f64::MAX;
         if better {
-            let mut best_cost = f64::MAX;
-            let mut old_cost = f64::MAX;
             // iterative optimization
             for i in 0..10 {
                 // transform current_cloud by current estimate
@@ -243,12 +247,17 @@ impl PointCloudMatching {
                         .transform_by_mat(cp_transform.to_homogeneous());
 
                     let (ev, vnum) = calc_cost(current_cloud_in_odom.clone(), &nearests);
+                    if i == 0 && j == 0 {
+                        self.initial_cost = Some(ev);
+                    }
+
                     let dx = (calc_cost(cc_odom_x_shifted, &nearests).0 - ev) / 1e-5;
                     let dy = (calc_cost(cc_odom_y_shifted, &nearests).0 - ev) / 1e-5;
                     let da = (calc_cost(cc_odom_a_shifted, &nearests).0 - ev) / 1e-5;
-                    let new_x = initial_transform.translation.x - 1e-6 * dx;
-                    let new_y = initial_transform.translation.y - 1e-6 * dy;
-                    let new_a = initial_transform.rotation.angle() - 1e-6 * da;
+                    let kk = 1e-6;
+                    let new_x = initial_transform.translation.x - kk * dx;
+                    let new_y = initial_transform.translation.y - kk * dy;
+                    let new_a = initial_transform.rotation.angle() - kk * da;
                     /*log::debug!(
                         "before cost: {}, x: {}, y: {}, a: {}",
                         ev,
@@ -300,6 +309,8 @@ impl PointCloudMatching {
         if better {
             log::debug!("pc map: clouds {}", self.map.clouds.len());
         }
+
+        self.optimized_cost = Some(best_cost);
         final_transform
     }
 }
@@ -400,5 +411,102 @@ impl PointCloudSLAM {
             ),
         );
         ego
+    }
+}
+
+struct LittleSLAMData {
+    measurements: Vec<lsc_reader::Measurement>,
+}
+
+impl LittleSLAMData {
+    fn new() -> LittleSLAMData {
+        let measurements =
+            lsc_reader::load_lsc_file("/home/haruki/Works/datasets/little_slam/hall.lsc");
+        LittleSLAMData {
+            measurements: measurements.unwrap(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use static_init::dynamic;
+
+    #[dynamic(drop)]
+    static mut RES: LittleSLAMData = LittleSLAMData::new();
+
+    #[tokio::test]
+    async fn scan_matching() {
+        env_logger::init();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        log::debug!("test");
+        let binding = RES.read();
+
+        let mut cl = h_analyzer_client_lib::HAnalyzerClient::new("http://localhost:50051").await;
+        cl.register_new_world(&"scan_matching".to_string())
+            .await
+            .unwrap();
+
+        let mut pm = PointCloudMatching::new();
+        for i in 0..2 {
+            let measurement = binding.measurements.get(i).clone().unwrap();
+            let odom_trfm = nalgebra::Isometry2::new(
+                nalgebra::Vector2::new(measurement.odometry.x, measurement.odometry.y),
+                measurement.odometry.theta,
+            );
+            println!("time {}, {}", measurement.time, odom_trfm);
+            let int_points_in_base =
+                PointCloud::from_vec_of_points(&measurement.lidar.interpolated_points);
+
+            let trfm = pm.process_current_cloud(
+                measurement.time,
+                &odom_trfm,
+                int_points_in_base.clone(),
+                true,
+            );
+            //            let trfm = measurement.relative_motion.unwrap_or_default();
+
+            println!(
+                "before {}, after: {}",
+                pm.initial_cost.unwrap(),
+                pm.optimized_cost.unwrap()
+            );
+            println!("trfm: {}", trfm);
+
+            let mut wf = h_analyzer_data::WorldFrame::new(i, measurement.time);
+            let mut ego = h_analyzer_data::Entity::new();
+            ego.add_measurement(
+                "lidar_int".to_string(),
+                h_analyzer_data::Measurement::PointCloud2D(
+                    int_points_in_base
+                        .clone()
+                        .transform_by_mat(odom_trfm.to_homogeneous())
+                        .to_h_pointcloud_2d(),
+                ),
+            );
+            ego.add_measurement(
+                "aligned".to_string(),
+                h_analyzer_data::Measurement::PointCloud2D(
+                    int_points_in_base
+                        .clone()
+                        .transform_by_mat(trfm.to_homogeneous())
+                        .to_h_pointcloud_2d(),
+                ),
+            );
+            ego.add_measurement(
+                "reference_map".to_string(),
+                h_analyzer_data::Measurement::PointCloud2D(
+                    pm.map.entire_map_cloud.to_h_pointcloud_2d(),
+                ),
+            );
+            wf.add_entity("ego".to_string(), ego);
+
+            cl.send_world_frame(wf).await.unwrap();
+
+            if i > 0 {
+                assert_eq!(pm.optimized_cost < pm.initial_cost, true);
+            }
+        }
     }
 }

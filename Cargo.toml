@@ -9,7 +9,9 @@ edition = "2021"
 log = "0.4.20"
 env_logger = "0.8.3"
 anyhow = "1.0.71"
+static_init = "1.0.3"
 
+argmin = "0.9.0"
 nalgebra = "0.32.3"
 approx = "0.3.2"
 
