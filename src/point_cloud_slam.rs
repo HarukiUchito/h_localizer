@@ -55,11 +55,10 @@ struct VoxelGrid {
     y_vec: Vec<f64>,
 }
 
-fn voxel_grid_filter(input: &PointCloud) -> PointCloud {
+fn voxel_grid_filter(input: &PointCloud, grid_size: f64) -> PointCloud {
     let mut voxels = std::collections::HashMap::new();
     for v in input.matrix.column_iter() {
         if let (Some(&px), Some(&py)) = (v.get(0), v.get(1)) {
-            let grid_size = 0.1;
             let key = ((px / grid_size) as i32, (py / grid_size) as i32);
             if !voxels.contains_key(&key) {
                 voxels.insert(
@@ -114,7 +113,7 @@ impl PointCloudMap {
         {
             self.clouds.insert(inner_time, cloud);
         }
-        self.entire_map_cloud = voxel_grid_filter(&self.entire_map());
+        self.entire_map_cloud = voxel_grid_filter(&self.entire_map(), 0.05);
         log::debug!(
             "map point num filtered: {:?}",
             self.entire_map_cloud.matrix.shape()
@@ -174,6 +173,34 @@ fn calc_cost(
     (cost, valid_num)
 }
 
+struct ScanMatchingCost<'a> {
+    initial_transform: nalgebra::Isometry2<f64>,
+    derivative: nalgebra::Isometry2<f64>,
+    pointcloud: PointCloud,
+    nearests: &'a Vec<Option<nalgebra::Matrix3x1<f64>>>,
+}
+
+impl<'a> argmin::core::CostFunction for ScanMatchingCost<'a> {
+    // one dimensional problem, no vector needed
+    type Param = f64;
+    type Output = f64;
+
+    fn cost(&self, x: &Self::Param) -> Result<Self::Output, argmin::core::Error> {
+        let new_x = self.initial_transform.translation.x - x * self.derivative.translation.x;
+        let new_y = self.initial_transform.translation.y - x * self.derivative.translation.y;
+        let new_a = self.initial_transform.rotation.angle() - x * self.derivative.rotation.angle();
+        let new_transform = nalgebra::Isometry2::new(nalgebra::Vector2::new(new_x, new_y), new_a);
+
+        let new_pc = self
+            .pointcloud
+            .clone()
+            .transform_by_mat(new_transform.to_homogeneous());
+        let (cost, _) = calc_cost(new_pc, &self.nearests);
+
+        Ok(cost)
+    }
+}
+
 struct PointCloudMatching {
     pub map: PointCloudMap,
     initial_cost: Option<f64>,
@@ -201,6 +228,8 @@ impl PointCloudMatching {
         current_cloud_in_base: PointCloud,
         better: bool,
     ) -> nalgebra::Isometry2<f64> {
+        let current_cloud_in_base = voxel_grid_filter(&current_cloud_in_base, 0.05);
+
         if better {
             log::debug!("\n[PointCloudMatching process]");
         }
@@ -256,7 +285,24 @@ impl PointCloudMatching {
                     let dx = (calc_cost(cc_odom_x_shifted, &nearests).0 - ev) / 1e-5;
                     let dy = (calc_cost(cc_odom_y_shifted, &nearests).0 - ev) / 1e-5;
                     let da = (calc_cost(cc_odom_a_shifted, &nearests).0 - ev) / 1e-5;
-                    let kk = 1e-3;
+
+                    let sm_cost = ScanMatchingCost {
+                        initial_transform: local_final_transform,
+                        derivative: nalgebra::Isometry2::new(nalgebra::Vector2::new(dx, dy), da),
+                        pointcloud: current_cloud_in_base.clone(),
+                        nearests: &nearests,
+                    };
+                    let solver = argmin::solver::brent::BrentOpt::new(-2., 2.);
+
+                    let res = argmin::core::Executor::new(sm_cost, solver)
+                        .configure(|state| state.max_iters(40))
+                        //.add_observer(SlogLogger::term(), ObserverMode::Always)
+                        .run()
+                        .unwrap();
+
+                    //println!("Result of brent:\n{res}");
+                    let kk = res.state.best_param.unwrap_or_default();
+                    //let kk = 1e-3;
                     let new_x = local_final_transform.translation.x - kk * dx;
                     let new_y = local_final_transform.translation.y - kk * dy;
                     let new_a = local_final_transform.rotation.angle() - kk * da;
@@ -468,8 +514,8 @@ mod tests {
 
             println!(
                 "before {}, after: {}",
-                pm.initial_cost.unwrap(),
-                pm.optimized_cost.unwrap()
+                pm.initial_cost.unwrap().sqrt(),
+                pm.optimized_cost.unwrap().sqrt()
             );
             println!("trfm: {}", trfm);
 
