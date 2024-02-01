@@ -106,8 +106,8 @@ impl PointCloudMap {
     fn add_point_cloud(&mut self, timestamp: f64, cloud: PointCloud) {
         let inner_time = (timestamp * 1e6) as u64;
         if self.clouds.last_key_value().is_some() {
-            log::debug!("ts {} inner {}", timestamp * 1e6, inner_time);
-            log::debug!("last {}", self.clouds.last_key_value().unwrap().0);
+            //log::debug!("ts {} inner {}", timestamp * 1e6, inner_time);
+            //log::debug!("last {}", self.clouds.last_key_value().unwrap().0);
         }
         if self.clouds.is_empty()
             || (inner_time - self.clouds.last_key_value().unwrap().0 >= self.minimum_time_diff)
@@ -306,11 +306,19 @@ impl PointCloudMatching {
             timestamp,
             current_cloud_in_base.transform_by_mat(final_transform.to_homogeneous()),
         );
-        if better {
-            log::debug!("pc map: clouds {}", self.map.clouds.len());
-        }
 
         self.optimized_cost = Some(best_cost);
+
+        // print debug
+        if better {
+            log::debug!("pc map: clouds {}", self.map.clouds.len());
+            log::debug!(
+                "cost before {:?}, after: {:?}",
+                self.initial_cost,
+                self.optimized_cost
+            );
+        }
+
         final_transform
     }
 }
@@ -374,16 +382,13 @@ impl PointCloudSLAM {
             better,
         );
 
-        log::debug!("current: {:?}", self.current_pose);
-        log::debug!("initial: {:?}", lidar_to_odom);
-        log::debug!("final  : {:?}", final_transform);
+        //log::debug!("current: {:?}", self.current_pose);
+        //log::debug!("initial: {:?}", lidar_to_odom);
+        //log::debug!("final  : {:?}", final_transform);
 
         self.current_pose = final_transform * lidar_to_baselink.inverse();
 
-        log::debug!(
-            "new current  : {:?}",
-            final_transform * lidar_to_baselink.inverse()
-        );
+        //log::debug!("new current  : {:?}", self.current_pose);
 
         // send world frame
         let mut ego = h_analyzer_data::Entity::new();
