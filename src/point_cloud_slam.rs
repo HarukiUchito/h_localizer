@@ -254,7 +254,7 @@ impl PointCloudMatching {
                     let dx = (calc_cost(cc_odom_x_shifted, &nearests).0 - ev) / 1e-5;
                     let dy = (calc_cost(cc_odom_y_shifted, &nearests).0 - ev) / 1e-5;
                     let da = (calc_cost(cc_odom_a_shifted, &nearests).0 - ev) / 1e-5;
-                    let kk = 1e-6;
+                    let kk = 1e-3;
                     let new_x = initial_transform.translation.x - kk * dx;
                     let new_y = initial_transform.translation.y - kk * dy;
                     let new_a = initial_transform.rotation.angle() - kk * da;
