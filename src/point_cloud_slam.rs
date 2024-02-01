@@ -157,6 +157,23 @@ impl PointCloudMap {
     }
 }
 
+fn calc_cost(
+    pointcloud: PointCloud,
+    nearests: &Vec<Option<nalgebra::Matrix3x1<f64>>>,
+) -> (f64, i32) {
+    let mut cost = 0.0;
+    let pnum = pointcloud.matrix.shape().1;
+    let mut valid_num = 0;
+    for i in 0..pnum {
+        if let Some(np) = nearests[i] {
+            let p = pointcloud.matrix.column(i);
+            cost += PointCloudMatching::point_to_point_cost(np, p.into());
+            valid_num += 1;
+        }
+    }
+    (cost, valid_num)
+}
+
 struct PointCloudMatching {
     pub map: PointCloudMap,
     initial_cost: Option<f64>,
@@ -189,21 +206,6 @@ impl PointCloudMatching {
         }
         let mut final_transform = initial_transform.clone();
 
-        let calc_cost = |pointcloud: PointCloud,
-                         nearests: &Vec<Option<nalgebra::Matrix3x1<f64>>>| {
-            let mut cost = 0.0;
-            let pnum = pointcloud.matrix.shape().1;
-            let mut valid_num = 0;
-            for i in 0..pnum {
-                if let Some(np) = nearests[i] {
-                    let p = pointcloud.matrix.column(i);
-                    cost += PointCloudMatching::point_to_point_cost(np, p.into());
-                    valid_num += 1;
-                }
-            }
-            (cost, valid_num)
-        };
-
         let mut best_cost = f64::MAX;
         let mut old_cost = f64::MAX;
         if better {
@@ -228,19 +230,19 @@ impl PointCloudMatching {
                         .clone()
                         .transform_by_mat(local_final_transform.to_homogeneous());
                     // slightly shifted current points
-                    let mut cp_transform = initial_transform.clone();
+                    let mut cp_transform = local_final_transform.clone();
                     cp_transform.translation.x += 1e-5;
                     let cc_odom_x_shifted = current_cloud_in_base
                         .clone()
                         .transform_by_mat(cp_transform.to_homogeneous());
-                    let mut cp_transform = initial_transform.clone();
+                    let mut cp_transform = local_final_transform.clone();
                     cp_transform.translation.y += 1e-5;
                     let cc_odom_y_shifted = current_cloud_in_base
                         .clone()
                         .transform_by_mat(cp_transform.to_homogeneous());
                     let cp_transform = nalgebra::Isometry2::new(
-                        initial_transform.translation.vector,
-                        (initial_transform.rotation.angle() + 1e-5) as f64,
+                        local_final_transform.translation.vector,
+                        (local_final_transform.rotation.angle() + 1e-5) as f64,
                     );
                     let cc_odom_a_shifted = current_cloud_in_base
                         .clone()
@@ -255,17 +257,9 @@ impl PointCloudMatching {
                     let dy = (calc_cost(cc_odom_y_shifted, &nearests).0 - ev) / 1e-5;
                     let da = (calc_cost(cc_odom_a_shifted, &nearests).0 - ev) / 1e-5;
                     let kk = 1e-3;
-                    let new_x = initial_transform.translation.x - kk * dx;
-                    let new_y = initial_transform.translation.y - kk * dy;
-                    let new_a = initial_transform.rotation.angle() - kk * da;
-                    /*log::debug!(
-                        "before cost: {}, x: {}, y: {}, a: {}",
-                        ev,
-                        initial_transform.translation.x,
-                        initial_transform.translation.y,
-                        initial_transform.rotation.angle()
-                    );*/
-                    //log::debug!(" after x: {}, y: {}, a: {}", new_x, new_y, new_a);
+                    let new_x = local_final_transform.translation.x - kk * dx;
+                    let new_y = local_final_transform.translation.y - kk * dy;
+                    let new_a = local_final_transform.rotation.angle() - kk * da;
                     let new_transform =
                         nalgebra::Isometry2::new(nalgebra::Vector2::new(new_x, new_y), new_a);
 
