@@ -128,7 +128,7 @@ impl PointCloudMap {
             .entire_map_cloud
             .matrix
             .column_iter()
-            .map(|v| ((v - query_point).transpose() * (v - query_point)).sum())
+            .map(|v| point_to_point_cost(&(v.into()), query_point))
             .collect();
         let (min_index, &min_dist) = distances
             .iter()
@@ -156,6 +156,15 @@ impl PointCloudMap {
     }
 }
 
+fn point_to_point_cost(p1: &nalgebra::Matrix3x1<f64>, p2: &nalgebra::Matrix3x1<f64>) -> f64 {
+    let dp = p1 - p2;
+    let ans = (dp.transpose() * dp).sum();
+    if ans > 0.2 {
+        //log::debug!("p1 {} p2 {}, ans: {}", p1, p2, ans);
+    }
+    ans
+}
+
 fn calc_cost(
     pointcloud: PointCloud,
     nearests: &Vec<Option<nalgebra::Matrix3x1<f64>>>,
@@ -166,11 +175,11 @@ fn calc_cost(
     for i in 0..pnum {
         if let Some(np) = nearests[i] {
             let p = pointcloud.matrix.column(i);
-            cost += PointCloudMatching::point_to_point_cost(np, p.into());
+            cost += point_to_point_cost(&np, &p.into());
             valid_num += 1;
         }
     }
-    (cost, valid_num)
+    (cost / valid_num as f64, valid_num)
 }
 
 struct ScanMatchingCost<'a> {
@@ -214,11 +223,6 @@ impl PointCloudMatching {
             initial_cost: None,
             optimized_cost: None,
         }
-    }
-
-    fn point_to_point_cost(p1: nalgebra::Matrix3x1<f64>, p2: nalgebra::Matrix3x1<f64>) -> f64 {
-        let dp = p1 - p2;
-        (dp.transpose() * dp).sum()
     }
 
     pub fn process_current_cloud(
