@@ -444,6 +444,14 @@ impl PointCloudSLAM {
                 measurement.odometry.theta as f64,
             )),
         );
+        ego.add_estimate(
+            "slam".to_string(),
+            h_analyzer_data::Estimate::Pose2D(h_analyzer_data::Pose2D::new(
+                self.current_pose.translation.x,
+                self.current_pose.translation.y,
+                self.current_pose.rotation.angle(),
+            )),
+        );
         ego.add_measurement(
             "lidar".to_string(),
             h_analyzer_data::Measurement::PointCloud2D(raw_points_in_odom.to_h_pointcloud_2d()),
