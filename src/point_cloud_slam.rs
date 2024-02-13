@@ -212,8 +212,8 @@ impl<'a> argmin::core::CostFunction for ScanMatchingCost<'a> {
 
 struct PointCloudMatching {
     pub map: PointCloudMap,
-    initial_cost: Option<f64>,
-    optimized_cost: Option<f64>,
+    pub initial_cost: Option<f64>,
+    pub optimized_cost: Option<f64>,
 }
 
 impl PointCloudMatching {
@@ -351,7 +351,9 @@ impl PointCloudMatching {
             current_cloud_in_base.transform_by_mat(final_transform.to_homogeneous()),
         );
 
-        self.optimized_cost = Some(best_cost);
+        if best_cost != f64::MAX {
+            self.optimized_cost = Some(best_cost);
+        }
 
         // print debug
         if better {
@@ -370,6 +372,8 @@ impl PointCloudMatching {
 pub struct PointCloudSLAM {
     matching: PointCloudMatching,
     current_pose: nalgebra::Isometry2<f64>,
+
+    pub log_str_csv: String,
 }
 
 impl PointCloudSLAM {
@@ -380,6 +384,7 @@ impl PointCloudSLAM {
                 nalgebra::Vector2::new(0.0, 0.0),
                 std::f64::consts::PI,
             ),
+            log_str_csv: "".to_string(),
         }
     }
 
@@ -433,6 +438,13 @@ impl PointCloudSLAM {
         self.current_pose = final_transform * lidar_to_baselink.inverse();
 
         //log::debug!("new current  : {:?}", self.current_pose);
+        self.log_str_csv.clear();
+        self.log_str_csv += format!(
+            "{},{}",
+            measurement.time,
+            self.matching.optimized_cost.unwrap_or(0.0)
+        )
+        .as_str();
 
         // send world frame
         let mut ego = h_analyzer_data::Entity::new();
