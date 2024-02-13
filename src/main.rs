@@ -1,4 +1,4 @@
-use h_localizer::*;
+use h_localizer::{point_cloud_slam::LogHeader, *};
 use tokio::time::{sleep_until, Duration, Instant};
 
 use std::io::Write;
@@ -56,6 +56,8 @@ async fn main() -> anyhow::Result<()> {
 
     let mut log_writer = LogWriter::new(format!("log_{}.csv", file_num).as_str());
     log_writer.write_line(format!("# data used: {}", file_path).as_str())?;
+    log_writer
+        .write_line(format!("# {}", point_cloud_slam::PointCloudSLAM::LOG_HEADER).as_str())?;
 
     let first_timestamp = measurements[0].time;
     let first_time = Instant::now();

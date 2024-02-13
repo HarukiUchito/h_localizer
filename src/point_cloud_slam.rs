@@ -369,11 +369,19 @@ impl PointCloudMatching {
     }
 }
 
+pub trait LogHeader<'a> {
+    const LOG_HEADER: &'a str;
+}
+
 pub struct PointCloudSLAM {
     matching: PointCloudMatching,
     current_pose: nalgebra::Isometry2<f64>,
 
     pub log_str_csv: String,
+}
+
+impl LogHeader<'_> for PointCloudSLAM {
+    const LOG_HEADER: &'static str = "timestamp[s],cost";
 }
 
 impl PointCloudSLAM {
