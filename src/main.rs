@@ -54,7 +54,14 @@ async fn main() -> anyhow::Result<()> {
     let mut slam = point_cloud_slam::PointCloudSLAM::new();
     let mut slam_better = point_cloud_slam::PointCloudSLAM::new();
 
-    let mut log_writer = LogWriter::new(format!("log_{}.csv", file_num).as_str());
+    // prepare directory for log files
+    let _ = std::fs::create_dir("log");
+    let now = chrono::Utc::now()
+        .format("%Y_%m_%d_%H_%M_%S_%Z")
+        .to_string();
+
+    let mut log_writer = LogWriter::new(format!("log/log_{}.csv", now).as_str());
+    log_writer.write_line(format!("# generated on: {}", now).as_str())?;
     log_writer.write_line(format!("# data used: {}", file_path).as_str())?;
     log_writer
         .write_line(format!("# {}", point_cloud_slam::PointCloudSLAM::LOG_HEADER).as_str())?;
