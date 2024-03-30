@@ -891,8 +891,9 @@ dependencies = [
 [[package]]
 name = "h_analyzer_data"
 version = "0.1.0"
-source = "git+https://github.com/HarukiUchito/h_analyzer_data.git#208fa09f024928240e7cd490a30360e2fa6208c9"
+source = "git+https://github.com/HarukiUchito/h_analyzer_data.git#72b4948bac1a8a81e9428b5c1b925ff91aca629c"
 dependencies = [
+ "nalgebra",
  "prost",
  "serde",
  "tonic",
@@ -1055,7 +1056,7 @@ dependencies = [
  "httpdate",
  "itoa",
  "pin-project-lite",
- "socket2 0.5.5",
+ "socket2 0.4.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -1152,15 +1153,6 @@ name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0fd2260e829bddf4cb6ea802289de2f86d6a7a690192fbe91b3f46e0f2c8473"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1c173a5686ce8bfa551b3563d0c2170bf24ca44da99c7ca4bfdab5418c3fe57"
 dependencies = [
  "either",
 ]
@@ -1372,6 +1364,7 @@ dependencies = [
  "num-complex",
  "num-rational",
  "num-traits",
+ "serde",
  "simba",
  "typenum",
 ]
@@ -1405,6 +1398,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ba157ca0885411de85d6ca030ba7e2a83a28636056c7c699b07c8b6f7383214"
 dependencies = [
  "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -1634,7 +1628,7 @@ checksum = "c55e02e35260070b6f716a2423c2ff1c3bb1642ddca6f99e1f26d06268a0e2d2"
 dependencies = [
  "bytes",
  "heck",
- "itertools 0.11.0",
+ "itertools",
  "log 0.4.20",
  "multimap",
  "once_cell",
@@ -1655,7 +1649,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "efb6c9a1dd1def8e2124d17e83a20af56f1570d6c2d2bd9e266ccb768df3840e"
 dependencies = [
  "anyhow",
- "itertools 0.11.0",
+ "itertools",
  "proc-macro2",
  "quote",
  "syn 2.0.42",
@@ -1821,7 +1815,7 @@ checksum = "f0bf6267f6ea633c697228fcc70b4041271f4eb09d84a8962f6ee8ff366ee411"
 dependencies = [
  "array-init",
  "hex",
- "itertools 0.10.5",
+ "itertools",
  "lazy_static",
  "md-5",
  "regex 1.10.2",
