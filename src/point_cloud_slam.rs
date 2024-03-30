@@ -1,6 +1,8 @@
+use nalgebra::zero;
+
 use crate::lsc_reader;
 
-use std::ops::MulAssign;
+use std::{default, ops::MulAssign};
 #[derive(Debug, Clone)]
 struct PointCloud {
     pub matrix: nalgebra::Matrix3xX<f64>,
@@ -114,7 +116,7 @@ impl PointCloudMap {
             self.clouds.insert(inner_time, cloud);
         }
         self.entire_map_cloud = voxel_grid_filter(&self.entire_map(), 0.05);
-        log::debug!(
+        log::info!(
             "map point num filtered: {:?}",
             self.entire_map_cloud.matrix.shape()
         );
@@ -235,7 +237,7 @@ impl PointCloudMatching {
         let current_cloud_in_base = voxel_grid_filter(&current_cloud_in_base, 0.05);
 
         if better {
-            log::debug!("\n[PointCloudMatching process]");
+            log::info!("\n[PointCloudMatching process]");
         }
         let mut final_transform = initial_transform.clone();
 
@@ -357,8 +359,8 @@ impl PointCloudMatching {
 
         // print debug
         if better {
-            log::debug!("pc map: clouds {}", self.map.clouds.len());
-            log::debug!(
+            log::info!("pc map: clouds {}", self.map.clouds.len());
+            log::info!(
                 "cost before {:?}, after: {:?}",
                 self.initial_cost,
                 self.optimized_cost
@@ -369,29 +371,102 @@ impl PointCloudMatching {
     }
 }
 
+struct Odometry2D {
+    pub velocity: f64,
+    pub yaw_rate: f64,
+    pub current_covariance: nalgebra::Matrix3<f64>,
+}
+
+impl Odometry2D {
+    fn new() -> Self {
+        Self {
+            velocity: 0.0,
+            yaw_rate: 0.0,
+            current_covariance: nalgebra::Matrix3::zeros(),
+        }
+    }
+    fn update(&mut self, dt: f64, current_motion: &nalgebra::Isometry2<f64>) {
+        let mx = current_motion.translation.x;
+        let my = current_motion.translation.y;
+        let mt = current_motion.rotation.angle();
+        let distance = (mx * mx + my * my).sqrt();
+
+        self.velocity = distance / dt;
+        self.yaw_rate = mt / dt;
+
+        log::info!("velocity: {}, yaw rate: {}", self.velocity, self.yaw_rate);
+        let vel_ll = 0.001;
+        let yaw_ll = 0.01;
+        if self.velocity < vel_ll {
+            self.velocity = vel_ll;
+        }
+        if self.yaw_rate < yaw_ll {
+            self.yaw_rate = yaw_ll;
+        }
+
+        let c_v = 1.0;
+        let c_a = 5.0;
+        let u_mat = nalgebra::Matrix2::new(
+            c_v * self.velocity * self.velocity,
+            0.0,
+            0.0,
+            c_a * self.yaw_rate * self.yaw_rate,
+        );
+
+        // rotate covariance
+        let cs = mt.cos();
+        let sn = mt.sin();
+
+        let jxt_mat = nalgebra::Matrix3::new(
+            1.0,
+            0.0,
+            -distance * sn,
+            0.0,
+            1.0,
+            distance * cs,
+            0.0,
+            0.0,
+            1.0,
+        );
+
+        let jut_mat = nalgebra::Matrix3x2::new(dt * cs, 0.0, dt * sn, 0.0, 0.0, dt);
+
+        self.current_covariance = jxt_mat * self.current_covariance * jxt_mat.transpose()
+            + jut_mat * u_mat * jut_mat.transpose();
+
+        log::info!("{}", self.current_covariance);
+    }
+}
+
 pub trait LogHeader<'a> {
     const LOG_HEADER: &'a str;
 }
 
 pub struct PointCloudSLAM {
+    odometry: Odometry2D,
     matching: PointCloudMatching,
     current_pose: nalgebra::Isometry2<f64>,
+    last_pose: Option<nalgebra::Isometry2<f64>>,
 
+    last_timestamp_opt: Option<f64>,
     pub log_str_csv: String,
 }
 
 impl LogHeader<'_> for PointCloudSLAM {
-    const LOG_HEADER: &'static str = "timestamp[s],cost";
+    const LOG_HEADER: &'static str = "timestamp[s],cost,velocity[m/s],yaw_rate[rad/s]";
 }
 
 impl PointCloudSLAM {
     pub fn new() -> Self {
         Self {
+            odometry: Odometry2D::new(),
             matching: PointCloudMatching::new(),
             current_pose: nalgebra::Isometry2::new(
                 nalgebra::Vector2::new(0.0, 0.0),
                 std::f64::consts::PI,
             ),
+            last_pose: None,
+            last_timestamp_opt: None,
             log_str_csv: "".to_string(),
         }
     }
@@ -404,12 +479,21 @@ impl PointCloudSLAM {
         better: bool,
     ) -> h_analyzer_data::Entity {
         if better {
-            log::debug!("odom: {:?}", measurement.odometry);
-            log::debug!("lidar point num: {}", measurement.lidar.points.len());
+            log::info!("odom: {:?}", measurement.odometry);
+            log::info!("lidar point num: {}", measurement.lidar.points.len());
         }
 
-        if let Some(rmotion) = measurement.relative_motion {
+        // wheel odometry update
+        if let (Some(last_timestamp), Some(last_pose), Some(rmotion)) = (
+            self.last_timestamp_opt,
+            self.last_pose,
+            measurement.relative_motion,
+        ) {
+            // pose update
             self.current_pose.mul_assign(rmotion);
+
+            let dt = current_timestamp - last_timestamp;
+            self.odometry.update(dt, &rmotion);
         } else {
             self.current_pose = nalgebra::Isometry2::new(
                 nalgebra::Vector2::new(
@@ -448,9 +532,11 @@ impl PointCloudSLAM {
         //log::debug!("new current  : {:?}", self.current_pose);
         self.log_str_csv.clear();
         self.log_str_csv += format!(
-            "{},{}",
+            "{},{},{},{}",
             measurement.time,
-            self.matching.optimized_cost.unwrap_or(0.0)
+            self.matching.optimized_cost.unwrap_or(0.0),
+            self.odometry.velocity,
+            self.odometry.yaw_rate
         )
         .as_str();
 
@@ -458,11 +544,14 @@ impl PointCloudSLAM {
         let mut ego = h_analyzer_data::Entity::new();
         ego.add_estimate(
             "odometry".to_string(),
-            h_analyzer_data::Estimate::Pose2D(h_analyzer_data::Pose2D::new(
-                measurement.odometry.x as f64,
-                measurement.odometry.y as f64,
-                measurement.odometry.theta as f64,
-            )),
+            h_analyzer_data::Estimate::Pose2DWithCovariance(
+                h_analyzer_data::Pose2DWithCovariance::new(
+                    measurement.odometry.x as f64,
+                    measurement.odometry.y as f64,
+                    measurement.odometry.theta as f64,
+                    self.odometry.current_covariance,
+                ),
+            ),
         );
         ego.add_estimate(
             "slam".to_string(),
@@ -487,6 +576,10 @@ impl PointCloudSLAM {
                 self.matching.map.entire_map_cloud.to_h_pointcloud_2d(),
             ),
         );
+
+        self.last_timestamp_opt = Some(current_timestamp);
+        self.last_pose = Some(self.current_pose);
+
         ego
     }
 }
