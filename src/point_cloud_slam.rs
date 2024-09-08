@@ -456,6 +456,20 @@ impl LogHeader<'_> for PointCloudSLAM {
     const LOG_HEADER: &'static str = "timestamp[s],cost,velocity[m/s],yaw_rate[rad/s]";
 }
 
+fn plot_points(rec: &rerun::RecordingStream, name: &str, points: &PointCloud) {
+    rec.log(
+        name,
+        &rerun::Points3D::new(
+            points
+                .matrix
+                .column_iter()
+                .map(|p| (p[(0, 0)] as f32, p[(1, 0)] as f32, 0.0)),
+        )
+        .with_radii((0..points.matrix.shape().1).map(|_| rerun::Radius(rerun::Float32(0.05)))),
+    )
+    .unwrap();
+}
+
 impl PointCloudSLAM {
     pub fn new() -> Self {
         Self {
@@ -477,7 +491,8 @@ impl PointCloudSLAM {
         current_timestamp: f64,
         measurement: &lsc_reader::Measurement,
         better: bool,
-    ) -> h_analyzer_data::Entity {
+        rec: &rerun::RecordingStream,
+    ) {
         if better {
             log::info!("odom: {:?}", measurement.odometry);
             log::info!("lidar point num: {}", measurement.lidar.points.len());
@@ -540,47 +555,12 @@ impl PointCloudSLAM {
         )
         .as_str();
 
-        // send world frame
-        let mut ego = h_analyzer_data::Entity::new();
-        ego.add_estimate(
-            "odometry".to_string(),
-            h_analyzer_data::Estimate::Pose2DWithCovariance(
-                h_analyzer_data::Pose2DWithCovariance::new(
-                    measurement.odometry.x as f64,
-                    measurement.odometry.y as f64,
-                    measurement.odometry.theta as f64,
-                    self.odometry.current_covariance,
-                ),
-            ),
-        );
-        ego.add_estimate(
-            "slam".to_string(),
-            h_analyzer_data::Estimate::Pose2D(h_analyzer_data::Pose2D::new(
-                self.current_pose.translation.x,
-                self.current_pose.translation.y,
-                self.current_pose.rotation.angle(),
-            )),
-        );
-        ego.add_measurement(
-            "lidar".to_string(),
-            h_analyzer_data::Measurement::PointCloud2D(raw_points_in_odom.to_h_pointcloud_2d()),
-        );
-        ego.add_measurement(
-            "lidar_int".to_string(),
-            h_analyzer_data::Measurement::PointCloud2D(int_points_in_odom.to_h_pointcloud_2d()),
-        );
-
-        ego.add_measurement(
-            "reference_map".to_string(),
-            h_analyzer_data::Measurement::PointCloud2D(
-                self.matching.map.entire_map_cloud.to_h_pointcloud_2d(),
-            ),
-        );
+        plot_points(&rec, "current", &raw_points_in_odom);
+        plot_points(&rec, "current_int", &int_points_in_odom);
+        plot_points(&rec, "map", &self.matching.map.entire_map_cloud);
 
         self.last_timestamp_opt = Some(current_timestamp);
         self.last_pose = Some(self.current_pose);
-
-        ego
     }
 }
 
@@ -591,7 +571,7 @@ struct LittleSLAMData {
 impl LittleSLAMData {
     fn new() -> LittleSLAMData {
         let measurements =
-            lsc_reader::load_lsc_file("/home/haruki/Works/datasets/little_slam/hall.lsc");
+            lsc_reader::load_lsc_file("/home/haruki/works/datasets/little_slam/hall.lsc");
         LittleSLAMData {
             measurements: measurements.unwrap(),
         }

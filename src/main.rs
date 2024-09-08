@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .get_matches();
     let file_num = matches.get_one::<usize>("num").unwrap();
-    let file_path = "/home/haruki/Works/datasets/little_slam/".to_string()
+    let file_path = "/home/haruki/works/datasets/little_slam/".to_string()
         + match file_num {
             0 => "hall",
             1 => "corridor",
@@ -46,10 +46,7 @@ async fn main() -> anyhow::Result<()> {
     println!("filepath: {}", file_path);
     let measurements = lsc_reader::load_lsc_file(file_path.as_str())?;
 
-    let mut cl = h_analyzer_client_lib::HAnalyzerClient::new("http://localhost:50051").await;
-    cl.register_new_world(&format!("slam_{}", file_num))
-        .await
-        .unwrap();
+    let rec = rerun::RecordingStreamBuilder::new("little_slam").spawn()?;
 
     let mut slam = point_cloud_slam::PointCloudSLAM::new();
     let mut slam_better = point_cloud_slam::PointCloudSLAM::new();
@@ -69,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
     let first_timestamp = measurements[0].time;
     let first_time = Instant::now();
     for i in 0..measurements.len() {
+        println!("frame {}/{}", i, measurements.len());
         let measurement = &measurements[i];
         let current_timestamp = measurement.time;
         let time_diff = current_timestamp - first_timestamp;
@@ -76,22 +74,18 @@ async fn main() -> anyhow::Result<()> {
         //log::debug!("check next {}\nts {}", i, current_timestamp,);
         sleep_until(first_time + Duration::from_secs_f64(time_diff)).await;
 
-        let mut wf = h_analyzer_data::WorldFrame::new(i, current_timestamp);
-        wf.add_entity(
-            "opt_ego".to_string(),
-            slam_better.process_measurement(i, current_timestamp, measurement, true),
-        );
-        wf.add_entity(
-            "ego".to_string(),
-            slam.process_measurement(i, current_timestamp, measurement, false),
-        );
+        rec.set_time_sequence("frame_idx", i as i64);
+        rec.set_time_seconds("timestamp", current_timestamp);
 
-        cl.send_world_frame(wf).await.unwrap();
+        slam_better.process_measurement(i, current_timestamp, measurement, true, &rec);
+        //slam.process_measurement(i, current_timestamp, measurement, false, &rec);
 
         let t = slam_better.log_str_csv.as_str();
         log_writer.write_line(t)?;
 
-        //break;
+        if i > 1000 {
+            break;
+        }
     }
     Ok(())
 }
