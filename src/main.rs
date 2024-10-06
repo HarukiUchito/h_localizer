@@ -77,14 +77,14 @@ async fn main() -> anyhow::Result<()> {
         rec.set_time_sequence("frame_idx", i as i64);
         rec.set_time_seconds("timestamp", current_timestamp);
 
-        slam_better.process_measurement(i, current_timestamp, measurement, true, &rec);
+        slam_better.process_measurement(i, current_timestamp, measurement, true, Some(&rec));
         //slam.process_measurement(i, current_timestamp, measurement, false, &rec);
 
         let t = slam_better.log_str_csv.as_str();
         log_writer.write_line(t)?;
 
-        if i > 1000 {
-            break;
+        if i == 100 {
+            //break;
         }
     }
     Ok(())
