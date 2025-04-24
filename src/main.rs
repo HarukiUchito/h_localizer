@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .get_matches();
     let file_num = matches.get_one::<usize>("num").unwrap();
-    let file_path = "/home/haruki/works/datasets/little_slam/".to_string()
+    let file_path = "/home/uchiito/works/datasets/little_slam/".to_string()
         + match file_num {
             0 => "hall",
             1 => "corridor",
