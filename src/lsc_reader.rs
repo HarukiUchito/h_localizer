@@ -286,7 +286,14 @@ mod lsc_reader_test {
 
     #[test]
     fn odometry_relative() -> anyhow::Result<()> {
-        let measurements = load_lsc_file("/home/haruki/Works/datasets/little_slam/hall.lsc")?;
+        let measurements = load_lsc_file(
+            homedir::my_home()?
+                .ok_or("home dir not found")
+                .unwrap()
+                .join(std::path::Path::new("works/datasets/little_slam/hall.lsc"))
+                .to_str()
+                .unwrap(),
+        )?;
 
         let mut current_state = nalgebra::Isometry2::new(nalgebra::Vector2::new(0.0, 0.0), 0.0);
         for measurement in measurements.iter() {

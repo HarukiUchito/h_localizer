@@ -41,14 +41,30 @@ async fn main() -> anyhow::Result<()> {
         .with_has_header(true)
         .with_skip_rows(2)
         .try_into_reader_with_file_path(Some(
-            "/home/haruki/works/datasets/Citrus-Farm-Dataset/scripts/ground_truth/01_13B_Jackal/gt.csv".into(),
+            homedir::my_home()?
+                .ok_or("home dir not found")
+                .unwrap()
+                .join(std::path::Path::new(
+                    "works/datasets/Citrus-Farm-Dataset/scripts/ground_truth/01_13B_Jackal/gt.csv",
+                ))
+                .to_str()
+                .unwrap()
+                .into(),
         ))?
         .finish()
         .unwrap();
     println!("{}", df);
 
     let reader = rosbag2_ffi_rs::Rosbag2Reader::new(
-        "/home/haruki/works/datasets/Citrus-Farm-Dataset/scripts/01_13B_Jackal/base_2023-07-18-14-26-48_0",
+        homedir::my_home()?
+        .ok_or("home dir not found")
+        .unwrap()
+        .join(std::path::Path::new(
+            "works/datasets/Citrus-Farm-Dataset/scripts/ground_truth/01_13B_Jackal/base_2023-07-18-14-26-48_0",
+        ))
+        .to_str()
+        .unwrap()
+        .into(),
     );
     println!("{}", reader);
     cl.register_data_frame("citrus_GT".to_string())
