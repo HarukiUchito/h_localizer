@@ -159,3 +159,27 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn graph_1d_test() {
+        use crate::Graph;
+        let mut graph = Graph::new();
+        for i in 0..3 {
+            graph.add_vertex(i, 0.0);
+        }
+
+        graph.add_measure_landmark_edge(0, 2, 2.0);
+        graph.add_measure_landmark_edge(1, 2, -1.0);
+        graph.add_measure_landmark_edge(0, 1, 3.1);
+        graph.add_prior_edge(0, 0.0);
+
+        println!("graph: {:?}", graph);
+        println!("vertices: {:?}", graph.vertices);
+        graph.solve_once();
+        approx::relative_eq!(graph.vertices[0].position, 0.0);
+        approx::relative_eq!(graph.vertices[1].position, 3.0);
+        approx::relative_eq!(graph.vertices[2].position, 2.0);
+    }
+}
