@@ -429,6 +429,10 @@ impl PointCloudMatching {
             gradient: Box::new(scan_2d),
         };
         let final_param = gn.optimize(&param);
+
+        self.initial_cost = Some(1.0);
+        self.optimized_cost = Some(0.0);
+
         nalgebra::Isometry2::new(
             nalgebra::Vector2::new(final_param.x, final_param.y),
             final_param.z,
@@ -793,8 +797,15 @@ struct LittleSLAMData {
 
 impl LittleSLAMData {
     fn new() -> LittleSLAMData {
-        let measurements =
-            lsc_reader::load_lsc_file("/home/haruki/works/datasets/little_slam/hall.lsc");
+        let measurements = lsc_reader::load_lsc_file(
+            homedir::my_home()
+                .unwrap()
+                .ok_or("home dir not found")
+                .unwrap()
+                .join(std::path::Path::new("works/datasets/little_slam/hall.lsc"))
+                .to_str()
+                .unwrap(),
+        );
         LittleSLAMData {
             measurements: measurements.unwrap(),
         }
@@ -831,14 +842,14 @@ mod tests {
                 pm.process_current_cloud(measurement.time, &odom_trfm, int_points_in_base.clone());
             //            let trfm = measurement.relative_motion.unwrap_or_default();
 
-            println!(
-                "before {}, after: {}",
-                pm.initial_cost.unwrap().sqrt(),
-                pm.optimized_cost.unwrap().sqrt()
-            );
-            println!("trfm: {}", trfm);
-
             if i > 0 {
+                println!(
+                    "before {}, after: {}",
+                    pm.initial_cost.unwrap().sqrt(),
+                    pm.optimized_cost.unwrap().sqrt()
+                );
+                println!("trfm: {}", trfm);
+
                 assert_eq!(pm.optimized_cost < pm.initial_cost, true);
             }
         }
